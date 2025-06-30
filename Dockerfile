@@ -9,12 +9,10 @@ RUN dotnet build "./src/Cli/Cli.csproj" -c Docker -o /out -r linux-x64
 
 WORKDIR /out
 
-RUN dotnet Microsoft.DataApiBuilder.dll init --database-type mssql --serverless true --host-mode development --graphql.disabled true --connection-string "@env('DATABASE_CONNECTION_STRING')" --auth.provider AzureAD --auth.audience "@env('AUTH_AUDIENCE')" --auth.issuer "@env('AUTH_ISSUER')"
-RUN dotnet Microsoft.DataApiBuilder.dll add lfdata --source "lf_data" --permissions "authenticated:read" --source.key-fields "id"
-RUN dotnet Microsoft.DataApiBuilder.dll add lfdata_comp --source "lf_data" --permissions "authenticated:read" --source.key-fields "Rec__,test_id"
-RUN dotnet Microsoft.DataApiBuilder.dll add hfdata --source "hf_data" --permissions "authenticated:read" --source.key-fields "id"
-RUN dotnet Microsoft.DataApiBuilder.dll add fpexec_summaries --source "fpexec_summaries" --permissions "authenticated:read" --source.key-fields "id"
-RUN dotnet Microsoft.DataApiBuilder.dll add run_stats --source "run_stats" --permissions "authenticated:read" --source.key-fields "id"
+# Run dotnet Microsoft.DataApiBuilder.dll commands here to configure
+Examples
+# RUN dotnet Microsoft.DataApiBuilder.dll init --database-type mssql --serverless true --host-mode development --graphql.disabled true --connection-string "@env('DATABASE_CONNECTION_STRING')" --auth.provider AzureAD --auth.audience "@env('AUTH_AUDIENCE')" --auth.issuer "@env('AUTH_ISSUER')"
+# RUN dotnet Microsoft.DataApiBuilder.dll add mydata --source "mydata" --permissions "authenticated:read" --source.key-fields "id"
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0-cbl-mariner2.0 AS runtime
 
