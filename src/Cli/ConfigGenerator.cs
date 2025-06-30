@@ -183,7 +183,7 @@ namespace Cli
                 case DatabaseType.DWSQL:
                 case DatabaseType.MSSQL:
                     dbOptions.Add(namingPolicy.ConvertName(nameof(MsSqlOptions.SetSessionContext)), options.SetSessionContext);
-
+                    dbOptions.Add(namingPolicy.ConvertName(nameof(MsSqlOptions.Serverless)), options.Serverless);
                     break;
                 case DatabaseType.MySQL:
                 case DatabaseType.PostgreSQL:
@@ -608,6 +608,17 @@ namespace Cli
                 }
 
                 dbOptions.Add(namingPolicy.ConvertName(nameof(MsSqlOptions.SetSessionContext)), options.DataSourceOptionsSetSessionContext.Value);
+            }
+
+            if (options.DataSourceOptionsServerless is not null)
+            {
+                if (!DatabaseType.MSSQL.Equals(dbType))
+                {
+                    _logger.LogError("Serverless option is only applicable for MSSQL database type.");
+                    return false;
+                }
+
+                dbOptions.Add(namingPolicy.ConvertName(nameof(MsSqlOptions.Serverless)), options.DataSourceOptionsServerless.Value);
             }
 
             dbOptions = EnumerableUtilities.IsNullOrEmpty(dbOptions) ? null : dbOptions;

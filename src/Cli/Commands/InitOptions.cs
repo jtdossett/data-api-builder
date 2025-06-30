@@ -25,6 +25,7 @@ namespace Cli.Commands
             string? cosmosNoSqlContainer,
             string? graphQLSchemaPath,
             bool setSessionContext,
+            bool serverless,
             HostMode hostMode,
             IEnumerable<string>? corsOrigin,
             string authenticationProvider,
@@ -48,6 +49,7 @@ namespace Cli.Commands
             CosmosNoSqlContainer = cosmosNoSqlContainer;
             GraphQLSchemaPath = graphQLSchemaPath;
             SetSessionContext = setSessionContext;
+            Serverless = serverless;
             HostMode = hostMode;
             CorsOrigin = corsOrigin;
             AuthenticationProvider = authenticationProvider;
@@ -81,6 +83,9 @@ namespace Cli.Commands
 
         [Option("set-session-context", Default = false, Required = false, HelpText = "Enable sending data to MsSql using session context.")]
         public bool SetSessionContext { get; }
+
+        [Option("serverless", Default = false, Required = false, HelpText = "Specify whether this is a serverless MSSQL engine.")]
+        public bool Serverless { get; }
 
         [Option("host-mode", Default = HostMode.Production, Required = false, HelpText = "Specify the Host mode - Development or Production")]
         public HostMode HostMode { get; }

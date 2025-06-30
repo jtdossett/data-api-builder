@@ -45,7 +45,9 @@ public record DataSource(
         if (typeof(TOptionType).IsAssignableFrom(typeof(MsSqlOptions)))
         {
             return (TOptionType)(object)new MsSqlOptions(
-                SetSessionContext: ReadBoolOption(namingPolicy.ConvertName(nameof(MsSqlOptions.SetSessionContext))));
+                SetSessionContext: ReadBoolOption(namingPolicy.ConvertName(nameof(MsSqlOptions.SetSessionContext))),
+                Serverless: ReadBoolOption(namingPolicy.ConvertName(nameof(MsSqlOptions.Serverless)))
+                );
         }
 
         throw new NotSupportedException($"The type {typeof(TOptionType).FullName} is not a supported strongly typed options object");
@@ -89,4 +91,4 @@ public record CosmosDbNoSQLDataSourceOptions(string? Database, string? Container
 /// <summary>
 /// Options for MsSql database.
 /// </summary>
-public record MsSqlOptions(bool SetSessionContext = true) : IDataSourceOptions;
+public record MsSqlOptions(bool SetSessionContext = true, bool Serverless = false) : IDataSourceOptions;

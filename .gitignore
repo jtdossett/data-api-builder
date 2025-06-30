@@ -35,6 +35,7 @@ dab-config*.json
 
 # Local-Only files
 .env
+*.sh
 
 # Verify test files
 *.received.*
