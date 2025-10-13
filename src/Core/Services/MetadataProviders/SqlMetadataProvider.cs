@@ -1562,6 +1562,34 @@ namespace Azure.DataApiBuilder.Core.Services
 
             await conn.OpenAsync();
 
+            if(!_runtimeConfigProvider.GetConfig().IsServerless)
+            {
+                return GetSchemaByFill(schemaName, tableName, conn);
+            }
+            else
+            {
+
+                return GetSchemaByRead(schemaName, tableName, conn);
+            }
+        }
+
+        private DataTable GetSchemaByRead(string schemaName, string tableName, ConnectionT conn)
+        {
+            _logger.LogDebug("Executing direct schema query override");
+            DataTable dataTable = new();
+            using CommandT selectCommand = new()
+            {
+                Connection = conn,
+                CommandText = $"SELECT * FROM [{schemaName}].[{tableName}] WHERE 1 = 0" // Fast schema retrieval
+            };
+
+            using DbDataReader reader = selectCommand.ExecuteReader(CommandBehavior.SchemaOnly);
+            dataTable.Load(reader);
+            return dataTable;
+        }
+
+        private DataTable GetSchemaByFill(string schemaName, string tableName, ConnectionT conn)
+        {
             DataAdapterT adapterForTable = new();
             CommandT selectCommand = new()
             {

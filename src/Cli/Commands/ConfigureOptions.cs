@@ -28,6 +28,7 @@ namespace Cli.Commands
             string? dataSourceOptionsContainer = null,
             string? dataSourceOptionsSchema = null,
             bool? dataSourceOptionsSetSessionContext = null,
+            bool? dataSourceOptionsServerless = null,            
             int? depthLimit = null,
             bool? runtimeGraphQLEnabled = null,
             string? runtimeGraphQLPath = null,
@@ -80,6 +81,7 @@ namespace Cli.Commands
             DataSourceOptionsContainer = dataSourceOptionsContainer;
             DataSourceOptionsSchema = dataSourceOptionsSchema;
             DataSourceOptionsSetSessionContext = dataSourceOptionsSetSessionContext;
+            DataSourceOptionsServerless = dataSourceOptionsServerless;
             // GraphQL
             DepthLimit = depthLimit;
             RuntimeGraphQLEnabled = runtimeGraphQLEnabled;
@@ -149,6 +151,9 @@ namespace Cli.Commands
 
         [Option("data-source.options.set-session-context", Required = false, HelpText = "Enable session context. Allowed values: true (default), false.")]
         public bool? DataSourceOptionsSetSessionContext { get; }
+
+        [Option("data-source.options.serverless", Required = false, HelpText = "Enable serverless mode. Allowed values: true (default), false.")]
+        public bool? DataSourceOptionsServerless { get; }
 
         [Option("runtime.graphql.depth-limit", Required = false, HelpText = "Max allowed depth of the nested query. Allowed values: (0,2147483647] inclusive. Default is infinity. Use -1 to remove limit.")]
         public int? DepthLimit { get; }

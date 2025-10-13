@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Azure.DataApiBuilder.Service.Exceptions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Azure.DataApiBuilder.Config.ObjectModel;
 
@@ -71,6 +72,12 @@ public record RuntimeConfig
          Runtime.Rest is null ||
          Runtime.Rest.Enabled) &&
          DataSource.DatabaseType != DatabaseType.CosmosDB_NoSQL;
+
+    /// </summary>
+    [JsonIgnore]
+    public bool IsServerless =>
+         DataSource.DatabaseType == DatabaseType.MSSQL &&
+            (DataSource.GetTypedOptions<MsSqlOptions>()?.Serverless??false);
 
     /// <summary>
     /// Retrieves the value of runtime.mcp.enabled property if present, default is true.
