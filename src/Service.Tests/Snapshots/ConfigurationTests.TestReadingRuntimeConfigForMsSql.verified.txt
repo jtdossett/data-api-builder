@@ -21,6 +21,10 @@
         }
       }
     },
+    Mcp: {
+      Enabled: true,
+      Path: /mcp
+    },
     Host: {
       Cors: {
         Origins: [
@@ -3442,6 +3446,19 @@
                 Action: Read
               }
             ]
+          },
+          {
+            Role: TestFieldExcludedForAggregation,
+            Actions: [
+              {
+                Action: Read,
+                Fields: {
+                  Exclude: [
+                    publisher_id
+                  ]
+                }
+              }
+            ]
           }
         ],
         Mappings: {
@@ -3633,6 +3650,36 @@
             Actions: [
               {
                 Action: *
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      GetBooksAuth: {
+        Source: {
+          Object: get_books,
+          Type: stored-procedure
+        },
+        GraphQL: {
+          Singular: GetBooksAuth,
+          Plural: GetBooksAuths,
+          Enabled: true,
+          Operation: Query
+        },
+        Rest: {
+          Methods: [
+            Get
+          ],
+          Enabled: true
+        },
+        Permissions: [
+          {
+            Role: teststoredprocauth,
+            Actions: [
+              {
+                Action: Execute
               }
             ]
           }

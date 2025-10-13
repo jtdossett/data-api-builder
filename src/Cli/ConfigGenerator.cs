@@ -13,6 +13,7 @@ using Azure.DataApiBuilder.Core.Configurations;
 using Azure.DataApiBuilder.Service;
 using Cli.Commands;
 using Microsoft.Extensions.Logging;
+using Serilog;
 using static Cli.Utils;
 
 namespace Cli
@@ -88,6 +89,7 @@ namespace Cli
             DatabaseType dbType = options.DatabaseType;
             string? restPath = options.RestPath;
             string graphQLPath = options.GraphQLPath;
+            string mcpPath = options.McpPath;
             string? runtimeBaseRoute = options.RuntimeBaseRoute;
             Dictionary<string, object?> dbOptions = new();
 
@@ -107,9 +109,10 @@ namespace Cli
                     " We recommend that you use the --graphql.enabled option instead.");
             }
 
-            bool restEnabled, graphQLEnabled;
+            bool restEnabled, graphQLEnabled, mcpEnabled;
             if (!TryDetermineIfApiIsEnabled(options.RestDisabled, options.RestEnabled, ApiType.REST, out restEnabled) ||
-                !TryDetermineIfApiIsEnabled(options.GraphQLDisabled, options.GraphQLEnabled, ApiType.GraphQL, out graphQLEnabled))
+                !TryDetermineIfApiIsEnabled(options.GraphQLDisabled, options.GraphQLEnabled, ApiType.GraphQL, out graphQLEnabled) ||
+                !TryDetermineIfMcpIsEnabled(options.McpEnabled, out mcpEnabled))
             {
                 return false;
             }
@@ -261,6 +264,7 @@ namespace Cli
                 Runtime: new(
                     Rest: new(restEnabled, restPath ?? RestRuntimeOptions.DEFAULT_PATH, options.RestRequestBodyStrict is CliBool.False ? false : true),
                     GraphQL: new(Enabled: graphQLEnabled, Path: graphQLPath, MultipleMutationOptions: multipleMutationOptions),
+                    Mcp: new(mcpEnabled, mcpPath ?? McpRuntimeOptions.DEFAULT_PATH),
                     Host: new(
                         Cors: new(options.CorsOrigin?.ToArray() ?? Array.Empty<string>()),
                         Authentication: new(
@@ -311,6 +315,17 @@ namespace Cli
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// Helper method to determine if the mcp api is enabled or not based on the enabled/disabled options in the dab init command.
+        /// </summary>
+        /// <param name="mcpEnabledOptionValue">True, if MCP is enabled</param>
+        /// <param name="isMcpEnabled">Out param isMcpEnabled</param>
+        /// <returns>True if MCP is enabled</returns>
+        private static bool TryDetermineIfMcpIsEnabled(CliBool mcpEnabledOptionValue, out bool isMcpEnabled)
+        {
+            return TryDetermineIfApiIsEnabled(false, mcpEnabledOptionValue, ApiType.MCP, out isMcpEnabled);
         }
 
         /// <summary>
@@ -433,6 +448,7 @@ namespace Cli
 
             EntityRestOptions restOptions = ConstructRestOptions(options.RestRoute, SupportedRestMethods, initialRuntimeConfig.DataSource.DatabaseType == DatabaseType.CosmosDB_NoSQL);
             EntityGraphQLOptions graphqlOptions = ConstructGraphQLTypeDetails(options.GraphQLType, graphQLOperationsForStoredProcedures);
+            EntityCacheOptions? cacheOptions = ConstructCacheOptions(options.CacheEnabled, options.CacheTtl);
 
             // Create new entity.
             Entity entity = new(
@@ -441,7 +457,9 @@ namespace Cli
                 GraphQL: graphqlOptions,
                 Permissions: permissionSettings,
                 Relationships: null,
-                Mappings: null);
+                Mappings: null,
+                Cache: cacheOptions,
+                Description: string.IsNullOrWhiteSpace(options.Description) ? null : options.Description);
 
             // Add entity to existing runtime config.
             IDictionary<string, Entity> entities = new Dictionary<string, Entity>(initialRuntimeConfig.Entities.Entities)
@@ -549,6 +567,11 @@ namespace Cli
                 return false;
             }
 
+            if (!TryUpdateConfiguredAzureKeyVaultOptions(options, ref runtimeConfig))
+            {
+                return false;
+            }
+
             return WriteRuntimeConfigToFile(runtimeConfigFile, runtimeConfig, fileSystem);
         }
 
@@ -569,6 +592,7 @@ namespace Cli
         {
             DatabaseType dbType = runtimeConfig.DataSource.DatabaseType;
             string dataSourceConnectionString = runtimeConfig.DataSource.ConnectionString;
+            DatasourceHealthCheckConfig? datasourceHealthCheckConfig = runtimeConfig.DataSource.Health;
 
             if (options.DataSourceDatabaseType is not null)
             {
@@ -622,7 +646,7 @@ namespace Cli
             }
 
             dbOptions = EnumerableUtilities.IsNullOrEmpty(dbOptions) ? null : dbOptions;
-            DataSource dataSource = new(dbType, dataSourceConnectionString, dbOptions);
+            DataSource dataSource = new(dbType, dataSourceConnectionString, dbOptions, datasourceHealthCheckConfig);
             runtimeConfig = runtimeConfig with { DataSource = dataSource };
 
             return runtimeConfig != null;
@@ -745,11 +769,28 @@ namespace Cli
                 }
             }
 
+            // MCP: Enabled and Path
+            if (options.RuntimeMcpEnabled != null ||
+                options.RuntimeMcpPath != null)
+            {
+                McpRuntimeOptions updatedMcpOptions = runtimeConfig?.Runtime?.Mcp ?? new();
+                bool status = TryUpdateConfiguredMcpValues(options, ref updatedMcpOptions);
+
+                if (status)
+                {
+                    runtimeConfig = runtimeConfig! with { Runtime = runtimeConfig.Runtime! with { Mcp = updatedMcpOptions } };
+                }
+                else
+                {
+                    return false;
+                }
+            }
+
             // Cache: Enabled and TTL
             if (options.RuntimeCacheEnabled != null ||
                 options.RuntimeCacheTTL != null)
             {
-                EntityCacheOptions? updatedCacheOptions = runtimeConfig?.Runtime?.Cache ?? new();
+                RuntimeCacheOptions? updatedCacheOptions = runtimeConfig?.Runtime?.Cache ?? new();
                 bool status = TryUpdateConfiguredCacheValues(options, ref updatedCacheOptions);
                 if (status)
                 {
@@ -774,6 +815,45 @@ namespace Cli
                 if (status)
                 {
                     runtimeConfig = runtimeConfig! with { Runtime = runtimeConfig.Runtime! with { Host = updatedHostOptions } };
+                }
+                else
+                {
+                    return false;
+                }
+            }
+
+            // Telemetry: Azure Log Analytics
+            if (options.AzureLogAnalyticsEnabled is not null ||
+                options.AzureLogAnalyticsDabIdentifier is not null ||
+                options.AzureLogAnalyticsFlushIntervalSeconds is not null ||
+                options.AzureLogAnalyticsCustomTableName is not null ||
+                options.AzureLogAnalyticsDcrImmutableId is not null ||
+                options.AzureLogAnalyticsDceEndpoint is not null)
+            {
+                AzureLogAnalyticsOptions updatedAzureLogAnalyticsOptions = runtimeConfig?.Runtime?.Telemetry?.AzureLogAnalytics ?? new();
+                bool status = TryUpdateConfiguredAzureLogAnalyticsOptions(options, ref updatedAzureLogAnalyticsOptions);
+                if (status)
+                {
+                    runtimeConfig = runtimeConfig! with { Runtime = runtimeConfig.Runtime! with { Telemetry = runtimeConfig.Runtime!.Telemetry is not null ? runtimeConfig.Runtime!.Telemetry with { AzureLogAnalytics = updatedAzureLogAnalyticsOptions } : new TelemetryOptions(AzureLogAnalytics: updatedAzureLogAnalyticsOptions) } };
+                }
+                else
+                {
+                    return false;
+                }
+            }
+
+            // Telemetry: File Sink
+            if (options.FileSinkEnabled is not null ||
+                options.FileSinkPath is not null ||
+                options.FileSinkRollingInterval is not null ||
+                options.FileSinkRetainedFileCountLimit is not null ||
+                options.FileSinkFileSizeLimitBytes is not null)
+            {
+                FileSinkOptions updatedFileSinkOptions = runtimeConfig?.Runtime?.Telemetry?.File ?? new();
+                bool status = TryUpdateConfiguredFileOptions(options, ref updatedFileSinkOptions);
+                if (status)
+                {
+                    runtimeConfig = runtimeConfig! with { Runtime = runtimeConfig.Runtime! with { Telemetry = runtimeConfig.Runtime!.Telemetry is not null ? runtimeConfig.Runtime!.Telemetry with { File = updatedFileSinkOptions } : new TelemetryOptions(File: updatedFileSinkOptions) } };
                 }
                 else
                 {
@@ -847,7 +927,7 @@ namespace Cli
         /// </summary>
         /// <param name="options">options.</param>
         /// <param name="updatedGraphQLOptions">updatedGraphQLOptions.</param>
-        /// <returns>True if the value needs to be udpated in the runtime config, else false</returns>
+        /// <returns>True if the value needs to be updated in the runtime config, else false</returns>
         private static bool TryUpdateConfiguredGraphQLValues(
             ConfigureOptions options,
             ref GraphQLRuntimeOptions? updatedGraphQLOptions)
@@ -907,16 +987,152 @@ namespace Cli
         }
 
         /// <summary>
+        /// Attempts to update the Config parameters in the Mcp runtime settings based on the provided value.
+        /// Validates that any user-provided values are valid and then returns true if the updated Mcp options
+        /// need to be overwritten on the existing config parameters
+        /// </summary>
+        /// <param name="options">options.</param>
+        /// <param name="updatedMcpOptions">updatedMcpOptions</param>
+        /// <returns>True if the value needs to be updated in the runtime config, else false</returns>
+        private static bool TryUpdateConfiguredMcpValues(
+            ConfigureOptions options,
+            ref McpRuntimeOptions updatedMcpOptions)
+        {
+            object? updatedValue;
+
+            try
+            {
+                // Runtime.Mcp.Enabled
+                updatedValue = options?.RuntimeMcpEnabled;
+                if (updatedValue != null)
+                {
+                    updatedMcpOptions = updatedMcpOptions! with { Enabled = (bool)updatedValue };
+                    _logger.LogInformation("Updated RuntimeConfig with Runtime.Mcp.Enabled as '{updatedValue}'", updatedValue);
+                }
+
+                // Runtime.Mcp.Path
+                updatedValue = options?.RuntimeMcpPath;
+                if (updatedValue != null)
+                {
+                    bool status = RuntimeConfigValidatorUtil.TryValidateUriComponent(uriComponent: (string)updatedValue, out string exceptionMessage);
+                    if (status)
+                    {
+                        updatedMcpOptions = updatedMcpOptions! with { Path = (string)updatedValue };
+                        _logger.LogInformation("Updated RuntimeConfig with Runtime.Mcp.Path as '{updatedValue}'", updatedValue);
+                    }
+                    else
+                    {
+                        _logger.LogError("Failed to update Runtime.Mcp.Path as '{updatedValue}' due to exception message: {exceptionMessage}", updatedValue, exceptionMessage);
+                        return false;
+                    }
+                }
+
+                // Handle DML tools configuration
+                bool hasToolUpdates = false;
+                DmlToolsConfig? currentDmlTools = updatedMcpOptions?.DmlTools;
+
+                // If setting all tools at once
+                updatedValue = options?.RuntimeMcpDmlToolsEnabled;
+                if (updatedValue != null)
+                {
+                    updatedMcpOptions = updatedMcpOptions! with { DmlTools = DmlToolsConfig.FromBoolean((bool)updatedValue) };
+                    _logger.LogInformation("Updated RuntimeConfig with Runtime.Mcp.Dml-Tools as '{updatedValue}'", updatedValue);
+                    return true; // Return early since we're setting all tools at once
+                }
+
+                // Handle individual tool updates
+                bool? describeEntities = currentDmlTools?.DescribeEntities;
+                bool? createRecord = currentDmlTools?.CreateRecord;
+                bool? readRecord = currentDmlTools?.ReadRecords;
+                bool? updateRecord = currentDmlTools?.UpdateRecord;
+                bool? deleteRecord = currentDmlTools?.DeleteRecord;
+                bool? executeEntity = currentDmlTools?.ExecuteEntity;
+
+                updatedValue = options?.RuntimeMcpDmlToolsDescribeEntitiesEnabled;
+                if (updatedValue != null)
+                {
+                    describeEntities = (bool)updatedValue;
+                    hasToolUpdates = true;
+                    _logger.LogInformation("Updated RuntimeConfig with runtime.mcp.dml-tools.describe-entities as '{updatedValue}'", updatedValue);
+                }
+
+                updatedValue = options?.RuntimeMcpDmlToolsCreateRecordEnabled;
+                if (updatedValue != null)
+                {
+                    createRecord = (bool)updatedValue;
+                    hasToolUpdates = true;
+                    _logger.LogInformation("Updated RuntimeConfig with runtime.mcp.dml-tools.create-record as '{updatedValue}'", updatedValue);
+                }
+
+                updatedValue = options?.RuntimeMcpDmlToolsReadRecordsEnabled;
+                if (updatedValue != null)
+                {
+                    readRecord = (bool)updatedValue;
+                    hasToolUpdates = true;
+                    _logger.LogInformation("Updated RuntimeConfig with runtime.mcp.dml-tools.read-records as '{updatedValue}'", updatedValue);
+                }
+
+                updatedValue = options?.RuntimeMcpDmlToolsUpdateRecordEnabled;
+                if (updatedValue != null)
+                {
+                    updateRecord = (bool)updatedValue;
+                    hasToolUpdates = true;
+                    _logger.LogInformation("Updated RuntimeConfig with runtime.mcp.dml-tools.update-record as '{updatedValue}'", updatedValue);
+                }
+
+                updatedValue = options?.RuntimeMcpDmlToolsDeleteRecordEnabled;
+                if (updatedValue != null)
+                {
+                    deleteRecord = (bool)updatedValue;
+                    hasToolUpdates = true;
+                    _logger.LogInformation("Updated RuntimeConfig with runtime.mcp.dml-tools.delete-record as '{updatedValue}'", updatedValue);
+                }
+
+                updatedValue = options?.RuntimeMcpDmlToolsExecuteEntityEnabled;
+                if (updatedValue != null)
+                {
+                    executeEntity = (bool)updatedValue;
+                    hasToolUpdates = true;
+                    _logger.LogInformation("Updated RuntimeConfig with runtime.mcp.dml-tools.execute-entity as '{updatedValue}'", updatedValue);
+                }
+
+                if (hasToolUpdates)
+                {
+                    updatedMcpOptions = updatedMcpOptions! with
+                    {
+                        DmlTools = new DmlToolsConfig
+                        {
+                            AllToolsEnabled = false,
+                            DescribeEntities = describeEntities,
+                            CreateRecord = createRecord,
+                            ReadRecords = readRecord,
+                            UpdateRecord = updateRecord,
+                            DeleteRecord = deleteRecord,
+                            ExecuteEntity = executeEntity
+                        }
+                    };
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to update RuntimeConfig.Mcp with exception message: {exceptionMessage}.", ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Attempts to update the Config parameters in the Cache runtime settings based on the provided value.
         /// Validates user-provided parameters and then returns true if the updated Cache options
         /// need to be overwritten on the existing config parameters
         /// </summary>
         /// <param name="options">options.</param>
         /// <param name="updatedCacheOptions">updatedCacheOptions.</param>
-        /// <returns>True if the value needs to be udpated in the runtime config, else false</returns>
+        /// <returns>True if the value needs to be updated in the runtime config, else false</returns>
         private static bool TryUpdateConfiguredCacheValues(
             ConfigureOptions options,
-            ref EntityCacheOptions? updatedCacheOptions)
+            ref RuntimeCacheOptions? updatedCacheOptions)
         {
             object? updatedValue;
             try
@@ -962,7 +1178,7 @@ namespace Cli
         /// </summary>
         /// <param name="options">options.</param>
         /// <param name="updatedHostOptions">updatedHostOptions.</param>
-        /// <returns>True if the value needs to be udpated in the runtime config, else false</returns>
+        /// <returns>True if the value needs to be updated in the runtime config, else false</returns>
         private static bool TryUpdateConfiguredHostValues(
             ConfigureOptions options,
             ref HostOptions? updatedHostOptions)
@@ -1099,6 +1315,158 @@ namespace Cli
         }
 
         /// <summary>
+        /// Attempts to update the Azure Log Analytics configuration options based on the provided values.
+        /// Validates that any user-provided parameter value is valid and updates the runtime configuration accordingly.
+        /// </summary>
+        /// <param name="options">The configuration options provided by the user.</param>
+        /// <param name="azureLogAnalyticsOptions">The Azure Log Analytics options to be updated.</param>
+        /// <returns>True if the Azure Log Analytics options were successfully configured; otherwise, false.</returns>
+        private static bool TryUpdateConfiguredAzureLogAnalyticsOptions(
+            ConfigureOptions options,
+            ref AzureLogAnalyticsOptions azureLogAnalyticsOptions)
+        {
+            try
+            {
+                AzureLogAnalyticsAuthOptions? updatedAuthOptions = azureLogAnalyticsOptions.Auth;
+
+                // Runtime.Telemetry.AzureLogAnalytics.Enabled
+                if (options.AzureLogAnalyticsEnabled is not null)
+                {
+                    azureLogAnalyticsOptions = azureLogAnalyticsOptions with { Enabled = options.AzureLogAnalyticsEnabled is CliBool.True, UserProvidedEnabled = true };
+                    _logger.LogInformation($"Updated configuration with runtime.telemetry.azure-log-analytics.enabled as '{options.AzureLogAnalyticsEnabled}'");
+                }
+
+                // Runtime.Telemetry.AzureLogAnalytics.DabIdentifier
+                if (options.AzureLogAnalyticsDabIdentifier is not null)
+                {
+                    azureLogAnalyticsOptions = azureLogAnalyticsOptions with { DabIdentifier = options.AzureLogAnalyticsDabIdentifier, UserProvidedDabIdentifier = true };
+                    _logger.LogInformation($"Updated configuration with runtime.telemetry.azure-log-analytics.dab-identifier as '{options.AzureLogAnalyticsDabIdentifier}'");
+                }
+
+                // Runtime.Telemetry.AzureLogAnalytics.FlushIntervalSeconds
+                if (options.AzureLogAnalyticsFlushIntervalSeconds is not null)
+                {
+                    if (options.AzureLogAnalyticsFlushIntervalSeconds <= 0)
+                    {
+                        _logger.LogError("Failed to update configuration with runtime.telemetry.azure-log-analytics.flush-interval-seconds. Value must be a positive integer greater than 0.");
+                        return false;
+                    }
+
+                    azureLogAnalyticsOptions = azureLogAnalyticsOptions with { FlushIntervalSeconds = options.AzureLogAnalyticsFlushIntervalSeconds, UserProvidedFlushIntervalSeconds = true };
+                    _logger.LogInformation($"Updated configuration with runtime.telemetry.azure-log-analytics.flush-interval-seconds as '{options.AzureLogAnalyticsFlushIntervalSeconds}'");
+                }
+
+                // Runtime.Telemetry.AzureLogAnalytics.Auth.CustomTableName
+                if (options.AzureLogAnalyticsCustomTableName is not null)
+                {
+                    updatedAuthOptions = updatedAuthOptions is not null
+                        ? updatedAuthOptions with { CustomTableName = options.AzureLogAnalyticsCustomTableName, UserProvidedCustomTableName = true }
+                        : new AzureLogAnalyticsAuthOptions { CustomTableName = options.AzureLogAnalyticsCustomTableName, UserProvidedCustomTableName = true };
+                    _logger.LogInformation($"Updated configuration with runtime.telemetry.azure-log-analytics.auth.custom-table-name as '{options.AzureLogAnalyticsCustomTableName}'");
+                }
+
+                // Runtime.Telemetry.AzureLogAnalytics.Auth.DcrImmutableId
+                if (options.AzureLogAnalyticsDcrImmutableId is not null)
+                {
+                    updatedAuthOptions = updatedAuthOptions is not null
+                        ? updatedAuthOptions with { DcrImmutableId = options.AzureLogAnalyticsDcrImmutableId, UserProvidedDcrImmutableId = true }
+                        : new AzureLogAnalyticsAuthOptions { DcrImmutableId = options.AzureLogAnalyticsDcrImmutableId, UserProvidedDcrImmutableId = true };
+                    _logger.LogInformation($"Updated configuration with runtime.telemetry.azure-log-analytics.auth.dcr-immutable-id as '{options.AzureLogAnalyticsDcrImmutableId}'");
+                }
+
+                // Runtime.Telemetry.AzureLogAnalytics.Auth.DceEndpoint
+                if (options.AzureLogAnalyticsDceEndpoint is not null)
+                {
+                    updatedAuthOptions = updatedAuthOptions is not null
+                        ? updatedAuthOptions with { DceEndpoint = options.AzureLogAnalyticsDceEndpoint, UserProvidedDceEndpoint = true }
+                        : new AzureLogAnalyticsAuthOptions { DceEndpoint = options.AzureLogAnalyticsDceEndpoint, UserProvidedDceEndpoint = true };
+                    _logger.LogInformation($"Updated configuration with runtime.telemetry.azure-log-analytics.auth.dce-endpoint as '{options.AzureLogAnalyticsDceEndpoint}'");
+                }
+
+                // Update Azure Log Analytics options with Auth options if it was modified
+                if (updatedAuthOptions is not null)
+                {
+                    azureLogAnalyticsOptions = azureLogAnalyticsOptions with { Auth = updatedAuthOptions };
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Failed to update configuration with runtime.telemetry.azure-log-analytics. Exception message: {ex.Message}.");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Updates the file sink options in the configuration.
+        /// </summary>
+        /// <param name="options">The configuration options provided by the user.</param>
+        /// <param name="fileOptions">The file sink options to be updated.</param>
+        /// <returns>True if the options were successfully updated; otherwise, false.</returns>
+        private static bool TryUpdateConfiguredFileOptions(
+            ConfigureOptions options,
+            ref FileSinkOptions fileOptions)
+        {
+            try
+            {
+                // Runtime.Telemetry.File.Enabled
+                if (options.FileSinkEnabled is not null)
+                {
+                    fileOptions = fileOptions with { Enabled = options.FileSinkEnabled is CliBool.True, UserProvidedEnabled = true };
+                    _logger.LogInformation($"Updated configuration with runtime.telemetry.file.enabled as '{options.FileSinkEnabled}'");
+                }
+
+                // Runtime.Telemetry.File.Path
+                if (options.FileSinkPath is not null)
+                {
+                    fileOptions = fileOptions with { Path = options.FileSinkPath, UserProvidedPath = true };
+                    _logger.LogInformation($"Updated configuration with runtime.telemetry.file.path as '{options.FileSinkPath}'");
+                }
+
+                // Runtime.Telemetry.File.RollingInterval
+                if (options.FileSinkRollingInterval is not null)
+                {
+                    fileOptions = fileOptions with { RollingInterval = ((RollingInterval)options.FileSinkRollingInterval).ToString(), UserProvidedRollingInterval = true };
+                    _logger.LogInformation($"Updated configuration with runtime.telemetry.file.rolling-interval as '{options.FileSinkRollingInterval}'");
+                }
+
+                // Runtime.Telemetry.File.RetainedFileCountLimit
+                if (options.FileSinkRetainedFileCountLimit is not null)
+                {
+                    if (options.FileSinkRetainedFileCountLimit <= 0)
+                    {
+                        _logger.LogError("Failed to update configuration with runtime.telemetry.file.retained-file-count-limit. Value must be a positive integer greater than 0.");
+                        return false;
+                    }
+
+                    fileOptions = fileOptions with { RetainedFileCountLimit = (int)options.FileSinkRetainedFileCountLimit, UserProvidedRetainedFileCountLimit = true };
+                    _logger.LogInformation($"Updated configuration with runtime.telemetry.file.retained-file-count-limit as '{options.FileSinkRetainedFileCountLimit}'");
+                }
+
+                // Runtime.Telemetry.File.FileSizeLimitBytes
+                if (options.FileSinkFileSizeLimitBytes is not null)
+                {
+                    if (options.FileSinkFileSizeLimitBytes <= 0)
+                    {
+                        _logger.LogError("Failed to update configuration with runtime.telemetry.file.file-size-limit-bytes. Value must be a positive integer greater than 0.");
+                        return false;
+                    }
+
+                    fileOptions = fileOptions with { FileSizeLimitBytes = (long)options.FileSinkFileSizeLimitBytes, UserProvidedFileSizeLimitBytes = true };
+                    _logger.LogInformation($"Updated configuration with runtime.telemetry.file.file-size-limit-bytes as '{options.FileSinkFileSizeLimitBytes}'");
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Failed to update configuration with runtime.telemetry.file. Exception message: {ex.Message}.");
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Parse permission string to create PermissionSetting array.
         /// </summary>
         /// <param name="permissions">Permission input string as IEnumerable.</param>
@@ -1225,6 +1593,7 @@ namespace Cli
             Dictionary<string, string>? updatedMappings = entity.Mappings;
             EntityActionPolicy? updatedPolicy = GetPolicyForOperation(options.PolicyRequest, options.PolicyDatabase);
             EntityActionFields? updatedFields = GetFieldsForOperation(options.FieldsToInclude, options.FieldsToExclude);
+            EntityCacheOptions? updatedCacheOptions = ConstructCacheOptions(options.CacheEnabled, options.CacheTtl);
 
             if (!updatedGraphQLDetails.Enabled)
             {
@@ -1303,7 +1672,9 @@ namespace Cli
                 GraphQL: updatedGraphQLDetails,
                 Permissions: updatedPermissions,
                 Relationships: updatedRelationships,
-                Mappings: updatedMappings);
+                Mappings: updatedMappings,
+                Cache: updatedCacheOptions,
+                Description: string.IsNullOrWhiteSpace(options.Description) ? entity.Description : options.Description);
             IDictionary<string, Entity> entities = new Dictionary<string, Entity>(initialConfig.Entities.Entities)
             {
                 [options.Entity] = updatedEntity
@@ -1682,10 +2053,10 @@ namespace Cli
             }
             else
             {
-                minimumLogLevel = RuntimeConfig.GetConfiguredLogLevel(deserializedRuntimeConfig);
+                minimumLogLevel = deserializedRuntimeConfig.GetConfiguredLogLevel();
                 HostMode hostModeType = deserializedRuntimeConfig.IsDevelopmentMode() ? HostMode.Development : HostMode.Production;
 
-                _logger.LogInformation("Setting default minimum LogLevel: {minimumLogLevel} for {hostMode} mode.", minimumLogLevel, hostModeType);
+                _logger.LogInformation($"Setting default minimum LogLevel: {minimumLogLevel} for {hostModeType} mode.", minimumLogLevel, hostModeType);
             }
 
             args.Add("--LogLevel");
@@ -1995,6 +2366,123 @@ namespace Cli
             };
 
             return WriteRuntimeConfigToFile(runtimeConfigFile, runtimeConfig, fileSystem);
+        }
+
+        /// <summary>
+        /// Attempts to update the Azure Key Vault configuration options based on the provided values.
+        /// Validates that any user-provided parameter value is valid and updates the runtime configuration accordingly.
+        /// </summary>
+        /// <param name="options">The configuration options provided by the user.</param>
+        /// <param name="runtimeConfig">The runtime configuration to be updated.</param>
+        /// <returns>True if the Azure Key Vault options were successfully configured; otherwise, false.</returns>
+        private static bool TryUpdateConfiguredAzureKeyVaultOptions(
+            ConfigureOptions options,
+            [NotNullWhen(true)] ref RuntimeConfig runtimeConfig)
+        {
+            try
+            {
+                AzureKeyVaultOptions? updatedAzureKeyVaultOptions = runtimeConfig.AzureKeyVault;
+                AKVRetryPolicyOptions? updatedRetryPolicyOptions = updatedAzureKeyVaultOptions?.RetryPolicy;
+
+                // Azure Key Vault Endpoint
+                if (options.AzureKeyVaultEndpoint is not null)
+                {
+                    updatedAzureKeyVaultOptions = updatedAzureKeyVaultOptions is not null
+                        ? updatedAzureKeyVaultOptions with { Endpoint = options.AzureKeyVaultEndpoint }
+                        : new AzureKeyVaultOptions { Endpoint = options.AzureKeyVaultEndpoint };
+                    _logger.LogInformation("Updated RuntimeConfig with azure-key-vault.endpoint as '{endpoint}'", options.AzureKeyVaultEndpoint);
+                }
+
+                // Retry Policy Mode
+                if (options.AzureKeyVaultRetryPolicyMode is not null)
+                {
+                    updatedRetryPolicyOptions = updatedRetryPolicyOptions is not null
+                        ? updatedRetryPolicyOptions with { Mode = options.AzureKeyVaultRetryPolicyMode.Value, UserProvidedMode = true }
+                        : new AKVRetryPolicyOptions { Mode = options.AzureKeyVaultRetryPolicyMode.Value, UserProvidedMode = true };
+                    _logger.LogInformation("Updated RuntimeConfig with azure-key-vault.retry-policy.mode as '{mode}'", options.AzureKeyVaultRetryPolicyMode.Value);
+                }
+
+                // Retry Policy Max Count
+                if (options.AzureKeyVaultRetryPolicyMaxCount is not null)
+                {
+                    if (options.AzureKeyVaultRetryPolicyMaxCount.Value < 1)
+                    {
+                        _logger.LogError("Failed to update configuration with runtime.azure-key-vault.retry-policy.max-count. Value must be a positive integer greater than 0.");
+                        return false;
+                    }
+
+                    updatedRetryPolicyOptions = updatedRetryPolicyOptions is not null
+                        ? updatedRetryPolicyOptions with { MaxCount = options.AzureKeyVaultRetryPolicyMaxCount.Value, UserProvidedMaxCount = true }
+                        : new AKVRetryPolicyOptions { MaxCount = options.AzureKeyVaultRetryPolicyMaxCount.Value, UserProvidedMaxCount = true };
+                    _logger.LogInformation("Updated RuntimeConfig with azure-key-vault.retry-policy.max-count as '{maxCount}'", options.AzureKeyVaultRetryPolicyMaxCount.Value);
+                }
+
+                // Retry Policy Delay Seconds
+                if (options.AzureKeyVaultRetryPolicyDelaySeconds is not null)
+                {
+                    if (options.AzureKeyVaultRetryPolicyDelaySeconds.Value < 1)
+                    {
+                        _logger.LogError("Failed to update configuration with runtime.azure-key-vault.retry-policy.delay-seconds. Value must be a positive integer greater than 0.");
+                        return false;
+                    }
+
+                    updatedRetryPolicyOptions = updatedRetryPolicyOptions is not null
+                        ? updatedRetryPolicyOptions with { DelaySeconds = options.AzureKeyVaultRetryPolicyDelaySeconds.Value, UserProvidedDelaySeconds = true }
+                        : new AKVRetryPolicyOptions { DelaySeconds = options.AzureKeyVaultRetryPolicyDelaySeconds.Value, UserProvidedDelaySeconds = true };
+                    _logger.LogInformation("Updated RuntimeConfig with azure-key-vault.retry-policy.delay-seconds as '{delaySeconds}'", options.AzureKeyVaultRetryPolicyDelaySeconds.Value);
+                }
+
+                // Retry Policy Max Delay Seconds
+                if (options.AzureKeyVaultRetryPolicyMaxDelaySeconds is not null)
+                {
+                    if (options.AzureKeyVaultRetryPolicyMaxDelaySeconds.Value < 1)
+                    {
+                        _logger.LogError("Failed to update configuration with runtime.azure-key-vault.retry-policy.max-delay-seconds. Value must be a positive integer greater than 0.");
+                        return false;
+                    }
+
+                    updatedRetryPolicyOptions = updatedRetryPolicyOptions is not null
+                        ? updatedRetryPolicyOptions with { MaxDelaySeconds = options.AzureKeyVaultRetryPolicyMaxDelaySeconds.Value, UserProvidedMaxDelaySeconds = true }
+                        : new AKVRetryPolicyOptions { MaxDelaySeconds = options.AzureKeyVaultRetryPolicyMaxDelaySeconds.Value, UserProvidedMaxDelaySeconds = true };
+                    _logger.LogInformation("Updated RuntimeConfig with azure-key-vault.retry-policy.max-delay-seconds as '{maxDelaySeconds}'", options.AzureKeyVaultRetryPolicyMaxDelaySeconds.Value);
+                }
+
+                // Retry Policy Network Timeout Seconds
+                if (options.AzureKeyVaultRetryPolicyNetworkTimeoutSeconds is not null)
+                {
+                    if (options.AzureKeyVaultRetryPolicyNetworkTimeoutSeconds.Value < 1)
+                    {
+                        _logger.LogError("Failed to update configuration with runtime.azure-key-vault.retry-policy.network-timeout-seconds. Value must be a positive integer greater than 0.");
+                        return false;
+                    }
+
+                    updatedRetryPolicyOptions = updatedRetryPolicyOptions is not null
+                        ? updatedRetryPolicyOptions with { NetworkTimeoutSeconds = options.AzureKeyVaultRetryPolicyNetworkTimeoutSeconds.Value, UserProvidedNetworkTimeoutSeconds = true }
+                        : new AKVRetryPolicyOptions { NetworkTimeoutSeconds = options.AzureKeyVaultRetryPolicyNetworkTimeoutSeconds.Value, UserProvidedNetworkTimeoutSeconds = true };
+                    _logger.LogInformation("Updated RuntimeConfig with azure-key-vault.retry-policy.network-timeout-seconds as '{networkTimeoutSeconds}'", options.AzureKeyVaultRetryPolicyNetworkTimeoutSeconds.Value);
+                }
+
+                // Update Azure Key Vault options with retry policy if retry policy was modified
+                if (updatedRetryPolicyOptions is not null)
+                {
+                    updatedAzureKeyVaultOptions = updatedAzureKeyVaultOptions is not null
+                        ? updatedAzureKeyVaultOptions with { RetryPolicy = updatedRetryPolicyOptions }
+                        : new AzureKeyVaultOptions { RetryPolicy = updatedRetryPolicyOptions };
+                }
+
+                // Update runtime config if Azure Key Vault options were modified
+                if (updatedAzureKeyVaultOptions is not null)
+                {
+                    runtimeConfig = runtimeConfig with { AzureKeyVault = updatedAzureKeyVaultOptions };
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to update RuntimeConfig.AzureKeyVault with exception message: {exceptionMessage}.", ex.Message);
+                return false;
+            }
         }
     }
 }

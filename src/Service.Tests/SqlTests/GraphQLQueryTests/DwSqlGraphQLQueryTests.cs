@@ -2,7 +2,9 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Collections.Generic;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using Azure.DataApiBuilder.Config.ObjectModel;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -48,6 +50,28 @@ namespace Azure.DataApiBuilder.Service.Tests.SqlTests.GraphQLQueryTests
         }
 
         /// <summary>
+        /// Tests In operator using query variables
+        /// <checks>Runs an mssql query and then validates that the result from the dwsql query graphql call matches the mssql query result.</checks>
+        /// </summary>
+        [TestMethod]
+        public async Task InQueryWithVariables()
+        {
+            string msSqlQuery = $"SELECT id, title FROM books  where id IN (1, 2) ORDER BY id asc FOR JSON PATH, INCLUDE_NULL_VALUES";
+            await InQueryWithVariables(msSqlQuery);
+        }
+
+        /// <summary>
+        /// Tests In operator with null's and empty values
+        /// <checks>Runs an mssql query and then validates that the result from the dwsql query graphql call matches the mssql query result.</checks>
+        /// </summary>
+        [TestMethod]
+        public async Task InQueryWithNullAndEmptyvalues()
+        {
+            string msSqlQuery = $"SELECT string_types FROM type_table where string_types IN ('lksa;jdflasdf;alsdflksdfkldj', ' ', NULL) FOR JSON PATH, INCLUDE_NULL_VALUES";
+            await InQueryWithNullAndEmptyvalues(msSqlQuery);
+        }
+
+        /// <summary>
         /// Gets array of results for querying more than one item using query mappings.
         /// </summary>
         [TestMethod]
@@ -60,6 +84,114 @@ namespace Azure.DataApiBuilder.Service.Tests.SqlTests.GraphQLQueryTests
                 FOR JSON PATH, INCLUDE_NULL_VALUES";
 
             await MultipleResultQueryWithMappings(msSqlQuery);
+        }
+
+        /// <summary>
+        /// Tests IN operator with aggregations
+        /// </summary>
+        [TestMethod]
+        public async Task INOperatorWithAggregations()
+        {
+            string dbQuery = @"
+                SELECT COALESCE(
+                    '[' + STRING_AGG(
+                        '{' +
+                        N'""publisher_id"":' + ISNULL(STRING_ESCAPE(CONVERT(NVARCHAR(MAX), [publisher_id]), 'json'), 'null') + ', ' +
+                        N'""publisherCount"":' + ISNULL(STRING_ESCAPE(CONVERT(NVARCHAR(MAX), [publisherCount]), 'json'), 'null') +
+                        '}', ', '
+                    ) + ']', '[]'
+                )
+                FROM (
+                    SELECT TOP 100
+                        [table0].[publisher_id] AS [publisher_id],
+                        COUNT([table0].[id]) AS [publisherCount]
+                    FROM [dbo].[books] AS [table0]
+                    WHERE 1 = 1
+                    GROUP BY [table0].[publisher_id]
+                    HAVING COUNT([table0].[id]) IN (1, 2)
+                ) AS [table0];";
+
+            string graphQLQueryName = "books";
+            string graphQLQuery = @"query {
+                      books {
+                        groupBy(fields: [publisher_id]) {
+                          fields{
+                            publisher_id
+                          }
+                          aggregations{
+                            publisherCount: count(field: id, having:  {
+                               in: [1, 2]
+                            })
+                          }
+                        }
+                      }
+                    }";
+
+            JsonElement actual = await ExecuteGraphQLRequestAsync(graphQLQuery, graphQLQueryName, isAuthenticated: false);
+            string expected = await GetDatabaseResultAsync(dbQuery);
+
+            SqlTestHelper.PerformTestEqualJsonStringsForAggreagtionQueries(expected, actual.ToString());
+        }
+
+        /// <summary>
+        /// Test IN Operator in a relationship, for example, in a One -> One relationship
+        /// (book -> website placement, website placememnt -> book)
+        /// <summary>
+        [TestMethod]
+        public async Task InFilterOneToOneJoinQuery()
+        {
+            string dwSqlQuery = @"
+                SELECT COALESCE(
+                    '[' + STRING_AGG(
+                        '{' +
+                            N'""id"":' + ISNULL(STRING_ESCAPE(CONVERT(NVARCHAR(MAX), [id]), 'json'), 'null') + ',' +
+                            N'""title"":' + ISNULL('""' + STRING_ESCAPE([title], 'json') + '""', 'null') + ',' +
+                            N'""websiteplacement"":' + ISNULL([websiteplacement], 'null') +
+                        '}',
+                        ', '
+                    ) + ']',
+                    '[]'
+                )
+                FROM (
+                    SELECT TOP 100
+                        [table0].[id] AS [id],
+                        [table0].[title] AS [title],
+                        ([table1_subq].[data]) AS [websiteplacement]
+                    FROM [dbo].[books] AS [table0]
+    
+                    OUTER APPLY (
+                        SELECT STRING_AGG(
+                            '{' +
+                                N'""price"":' + ISNULL(STRING_ESCAPE(CONVERT(NVARCHAR(MAX), [price]), 'json'), 'null') + ',' +
+                                N'""book_id"":' + ISNULL(STRING_ESCAPE(CONVERT(NVARCHAR(MAX), [book_id]), 'json'), 'null') +
+                            '}',
+                            ', '
+                        )
+                        FROM (
+                            SELECT TOP 1
+                                [table1].[price] AS [price],
+                                [table1].[book_id] AS [book_id]
+                            FROM [dbo].[book_website_placements] AS [table1]
+                            WHERE [table0].[id] = [table1].[book_id]
+                              AND [table1].[book_id] = [table0].[id]
+                            ORDER BY [table1].[id] ASC
+                        ) AS [table1]
+                    ) AS [table1_subq]([data])
+    
+                    WHERE (
+                        [table0].[title] IN ('Awesome book', 'Also Awesome book')
+                        AND EXISTS (
+                            SELECT 1
+                            FROM [dbo].[book_website_placements] AS [table6]
+                            WHERE [table6].[book_id] IN (1, 2)
+                              AND [table6].[book_id] = [table0].[id]
+                              AND [table0].[id] = [table6].[book_id]
+                        )
+                    )
+                    ORDER BY [table0].[id] DESC
+                ) AS [table0];";
+
+            await InFilterOneToOneJoinQuery(dwSqlQuery);
         }
 
         /// <summary>
@@ -95,6 +227,341 @@ namespace Azure.DataApiBuilder.Service.Tests.SqlTests.GraphQLQueryTests
                     ) AS [table0]";
 
             await OneToOneJoinQuery(dwSqlQuery);
+        }
+
+        /// <summary>
+        /// DwNTo1JoinOpt is enabled by default for testing
+        /// Below test case will ensure the results are identical with using STRING_AGG
+        /// </summary>
+        /// <returns></returns>
+        [TestMethod]
+        public async override Task DeeplyNestedManyToOneJoinQuery()
+        {
+            string dwSqlQuery = @"
+            SELECT COALESCE(
+                '[' + STRING_AGG(
+                    '{' + N'""title"":' + ISNULL('""' + STRING_ESCAPE([title], 'json') + '""', 'null') + ',' +
+                    N'""publishers"":' + ISNULL('""' + STRING_ESCAPE([publishers], 'json') + '""', 'null') + '}', 
+                    ', '
+                ) + ']', 
+                '[]'
+            )
+            FROM (
+                SELECT TOP 5 
+                    [table0].[title] AS [title], 
+                    ([table1_subq].[data]) AS [publishers]
+                FROM [dbo].[books] AS [table0]
+                OUTER APPLY (
+                    SELECT STRING_AGG(
+                        '{' + N'""name"":' + ISNULL('""' + STRING_ESCAPE([name], 'json') + '""', 'null') + ',' +
+                        N'""books"":' + ISNULL('""' + STRING_ESCAPE([books], 'json') + '""', 'null') + '}', 
+                        ', '
+                    )
+                    FROM (
+                        SELECT TOP 1 
+                            [table1].[name] AS [name], 
+                            (COALESCE([table2_subq].[data], '[]')) AS [books]
+                        FROM [dbo].[publishers] AS [table1]
+                        OUTER APPLY (
+                            SELECT COALESCE(
+                                '[' + STRING_AGG(
+                                    '{' + N'""title"":' + ISNULL('""' + STRING_ESCAPE([title], 'json') + '""', 'null') + ',' +
+                                    N'""publishers"":' + ISNULL('""' + STRING_ESCAPE([publishers], 'json') + '""', 'null') + '}', 
+                                    ', '
+                                ) + ']', 
+                                '[]'
+                            )
+                            FROM (
+                                SELECT TOP 4 
+                                    [table2].[title] AS [title], 
+                                    ([table3_subq].[data]) AS [publishers]
+                                FROM [dbo].[books] AS [table2]
+                                OUTER APPLY (
+                                    SELECT STRING_AGG(
+                                        '{' + N'""name"":' + ISNULL('""' + STRING_ESCAPE([name], 'json') + '""', 'null') + ',' +
+                                        N'""books"":' + ISNULL('""' + STRING_ESCAPE([books], 'json') + '""', 'null') + '}', 
+                                        ', '
+                                    )
+                                    FROM (
+                                        SELECT TOP 1 
+                                            [table3].[name] AS [name], 
+                                            (COALESCE([table4_subq].[data], '[]')) AS [books]
+                                        FROM [dbo].[publishers] AS [table3]
+                                        OUTER APPLY (
+                                            SELECT COALESCE(
+                                                '[' + STRING_AGG(
+                                                    '{' + N'""title"":' + ISNULL('""' + STRING_ESCAPE([title], 'json') + '""', 'null') + ',' +
+                                                    N'""publishers"":' + ISNULL('""' + STRING_ESCAPE([publishers], 'json') + '""', 'null') + '}', 
+                                                    ', '
+                                                ) + ']', 
+                                                '[]'
+                                            )
+                                            FROM (
+                                                SELECT TOP 3 
+                                                    [table4].[title] AS [title], 
+                                                    ([table5_subq].[data]) AS [publishers]
+                                                FROM [dbo].[books] AS [table4]
+                                                OUTER APPLY (
+                                                    SELECT STRING_AGG(
+                                                        '{' + N'""name"":' + ISNULL('""' + STRING_ESCAPE([name], 'json') + '""', 'null') + '}', 
+                                                        ', '
+                                                    )
+                                                    FROM (
+                                                        SELECT TOP 1 
+                                                            [table5].[name] AS [name]
+                                                        FROM [dbo].[publishers] AS [table5]
+                                                        WHERE [table4].[publisher_id] = [table5].[id] 
+                                                          AND [table5].[id] = [table4].[publisher_id]
+                                                        ORDER BY [table5].[id] ASC
+                                                    ) AS [table5]
+                                                ) AS [table5_subq]([data])
+                                                WHERE [table4].[publisher_id] = [table3].[id]
+                                                ORDER BY [table4].[id] ASC
+                                            ) AS [table4]
+                                        ) AS [table4_subq]([data])
+                                        WHERE [table2].[publisher_id] = [table3].[id] 
+                                          AND [table3].[id] = [table2].[publisher_id]
+                                        ORDER BY [table3].[id] ASC
+                                    ) AS [table3]
+                                ) AS [table3_subq]([data])
+                                WHERE [table2].[publisher_id] = [table1].[id]
+                                ORDER BY [table2].[id] ASC
+                            ) AS [table2]
+                        ) AS [table2_subq]([data])
+                        WHERE [table0].[publisher_id] = [table1].[id] 
+                          AND [table1].[id] = [table0].[publisher_id]
+                        ORDER BY [table1].[id] ASC
+                    ) AS [table1]
+                ) AS [table1_subq]([data])
+                WHERE 1 = 1
+                ORDER BY [table0].[id] ASC
+            ) AS [table0]
+            ";
+
+            string graphQLQueryName = "books";
+            string graphQLQuery = @"{
+              books(first: 5) {
+                items {
+                  title
+                  publishers {
+                    name
+                    books(first: 4) {
+                      items {
+                        title
+                        publishers {
+                          name
+                          books(first: 3) {
+                            items {
+                              title
+                              publishers {
+                                name
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }";
+
+            JsonElement actualGraphQLResults = await ExecuteGraphQLRequestAsync(graphQLQuery, graphQLQueryName, isAuthenticated: false);
+            string cleanedActualGraphQLResults = SqlTestHelper.RemoveItemsKeyFromJson(actualGraphQLResults.GetProperty("items")).ToString();
+
+            string expected = await GetDatabaseResultAsync(dwSqlQuery);
+
+            SqlTestHelper.PerformTestEqualJsonStringsForNestedQueries(expected, cleanedActualGraphQLResults);
+        }
+
+        /// <summary>
+        /// DwNTo1JoinOpt is enabled by default for testing
+        /// Below test case will ensure for To-N joins, the query builder will fallback to use STRING_AGG
+        /// And the results are consistent
+        /// </summary>
+        /// <returns></returns>
+        [TestMethod]
+        public async Task OneToManyJoinQuery()
+        {
+            string dwSqlQuery = @"
+                SELECT 
+                    COALESCE(
+                        '[' + STRING_AGG(
+                            '{' + 
+                            N'""id"":' + ISNULL(STRING_ESCAPE(CONVERT(NVARCHAR(MAX), [id]), 'json'), 'null') + ',' +
+                            N'""reviews"":' + ISNULL('""' + STRING_ESCAPE([reviews], 'json') + '""', 'null') + 
+                            '}', 
+                            ', '
+                        ) + ']', 
+                        '[]'
+                    ) 
+                FROM 
+                    (
+                        SELECT TOP 2 
+                            [table0].[id] AS [id], 
+                            COALESCE([table1_subq].[data], '[]') AS [reviews]
+                        FROM 
+                            [dbo].[books] AS [table0]
+                        OUTER APPLY 
+                            (
+                                SELECT 
+                                    COALESCE(
+                                        '[' + STRING_AGG(
+                                            '{' + 
+                                            N'""content"":' + ISNULL('""' + STRING_ESCAPE([content], 'json') + '""', 'null') + 
+                                            '}', 
+                                            ', '
+                                        ) + ']', 
+                                        '[]'
+                                    ) 
+                                FROM 
+                                    (
+                                        SELECT TOP 100 
+                                            [table1].[content] AS [content]
+                                        FROM 
+                                            [dbo].[reviews] AS [table1]
+                                        WHERE 
+                                            [table1].[book_id] = [table0].[id]
+                                        ORDER BY 
+                                            [table1].[book_id] ASC, 
+                                            [table1].[id] ASC
+                                    ) AS [table1]
+                            ) AS [table1_subq]([data])
+                        WHERE 
+                            1 = 1
+                        ORDER BY 
+                            [table0].[id] ASC
+                    ) AS [table0]";
+
+            string graphQLQueryName = "books";
+            string graphQLQuery = @"
+               query {
+                  books (first: 2) {
+                    items {
+                      id,
+                      reviews {
+                        items {
+                          content
+                        }
+                      }
+                    }
+                  }
+                }";
+
+            JsonElement actual = await ExecuteGraphQLRequestAsync(graphQLQuery, graphQLQueryName, isAuthenticated: false);
+            JsonNode cleanedActual = SqlTestHelper.RemoveItemsKeyFromJson(actual.GetProperty("items"));
+
+            string expected = await GetDatabaseResultAsync(dwSqlQuery);
+
+            SqlTestHelper.PerformTestEqualJsonStringsForNestedQueries(expected, cleanedActual.ToString());
+        }
+
+        /// <summary>
+        /// Added more complicated cases when queries are deeply nested and compare the results. 
+        /// </summary>
+        /// <returns></returns>
+        [TestMethod]
+        public async override Task DeeplyNestedManyToManyJoinQuery()
+        {
+            string dwSqlQuery = @"
+        SELECT COALESCE(
+            '[' + STRING_AGG(
+                '{' + N'""title"":' + ISNULL('""' + STRING_ESCAPE([title], 'json') + '""', 'null') + ',' +
+                N'""authors"":' + ISNULL('""' + STRING_ESCAPE([authors], 'json') + '""', 'null') + '}', ', '
+            ) + ']', '[]'
+        )
+        FROM (
+            SELECT TOP 5 
+                [table0].[title] AS [title], 
+                COALESCE([table1_subq].[data], '[]') AS [authors]
+            FROM [dbo].[books] AS [table0]
+            OUTER APPLY (
+                SELECT COALESCE(
+                    '[' + STRING_AGG(
+                        '{' + N'""name"":' + ISNULL('""' + STRING_ESCAPE([name], 'json') + '""', 'null') + ',' +
+                        N'""books"":' + ISNULL('""' + STRING_ESCAPE([books], 'json') + '""', 'null') + '}', ', '
+                    ) + ']', '[]'
+                )
+                FROM (
+                    SELECT TOP 4 
+                        [table1].[name] AS [name], 
+                        COALESCE([table2_subq].[data], '[]') AS [books]
+                    FROM [dbo].[authors] AS [table1]
+                    INNER JOIN [dbo].[book_author_link] AS [table11] 
+                        ON [table11].[author_id] = [table1].[id]
+                    OUTER APPLY (
+                        SELECT COALESCE(
+                            '[' + STRING_AGG(
+                                '{' + N'""title"":' + ISNULL('""' + STRING_ESCAPE([title], 'json') + '""', 'null') + ',' +
+                                N'""authors"":' + ISNULL('""' + STRING_ESCAPE([authors], 'json') + '""', 'null') + '}', ', '
+                            ) + ']', '[]'
+                        )
+                        FROM (
+                            SELECT TOP 3 
+                                [table2].[title] AS [title], 
+                                COALESCE([table3_subq].[data], '[]') AS [authors]
+                            FROM [dbo].[books] AS [table2]
+                            INNER JOIN [dbo].[book_author_link] AS [table8] 
+                                ON [table8].[book_id] = [table2].[id]
+                            OUTER APPLY (
+                                SELECT COALESCE(
+                                    '[' + STRING_AGG(
+                                        '{' + N'""name"":' + ISNULL('""' + STRING_ESCAPE([name], 'json') + '""', 'null') + '}', ', '
+                                    ) + ']', '[]'
+                                )
+                                FROM (
+                                    SELECT TOP 2 
+                                        [table3].[name] AS [name]
+                                    FROM [dbo].[authors] AS [table3]
+                                    INNER JOIN [dbo].[book_author_link] AS [table5] 
+                                        ON [table5].[author_id] = [table3].[id]
+                                    WHERE [table5].[book_id] = [table2].[id]
+                                    ORDER BY [table3].[id] ASC
+                                ) AS [table3]
+                            ) AS [table3_subq]([data])
+                            WHERE [table8].[author_id] = [table1].[id]
+                            ORDER BY [table2].[id] ASC
+                        ) AS [table2]
+                    ) AS [table2_subq]([data])
+                    WHERE [table11].[book_id] = [table0].[id]
+                    ORDER BY [table1].[id] ASC
+                ) AS [table1]
+            ) AS [table1_subq]([data])
+            WHERE 1 = 1
+            ORDER BY [table0].[id] ASC
+        ) AS [table0]";
+
+            string graphQLQueryName = "books";
+            string graphQLQuery = @"
+            {
+                books(first: 5) {
+                    items {
+                        title
+                        authors(first: 4) {
+                            items {
+                                name
+                                books(first: 3) {
+                                    items {
+                                        title
+                                        authors(first: 2) {
+                                           items {
+                                                name
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }";
+
+            JsonElement actualGraphQLResults = await ExecuteGraphQLRequestAsync(graphQLQuery, graphQLQueryName, isAuthenticated: false);
+            string cleanedActualGraphQLResults = SqlTestHelper.RemoveItemsKeyFromJson(actualGraphQLResults.GetProperty("items")).ToString();
+
+            string expected = await GetDatabaseResultAsync(dwSqlQuery);
+
+            SqlTestHelper.PerformTestEqualJsonStringsForNestedQueries(expected, cleanedActualGraphQLResults);
         }
 
         /// <summary>
@@ -753,6 +1220,57 @@ FROM (
         public override async Task TestNoAggregationOptionsForTableWithoutNumericFields()
         {
             await base.TestNoAggregationOptionsForTableWithoutNumericFields();
+        }
+
+        /// <summary>
+        /// When the feature flag object is passed to build GraphQL runtime objects
+        /// Runtime config can correctly get the value
+        /// </summary>
+        /// <returns></returns>
+        [TestMethod]
+        public void TestEnableDwNto1JoinQueryFeatureFlagLoadedFromRuntime()
+        {
+            RuntimeConfig mockConfig = new(
+               Schema: "",
+               DataSource: new(DatabaseType.MySQL, string.Empty, new()),
+               Runtime: new(
+                   Rest: new(),
+                   GraphQL: new(FeatureFlags: new()
+                   {
+                       EnableDwNto1JoinQueryOptimization = true
+                   }),
+                   Mcp: new(),
+                   Host: new(null, null)
+               ),
+               Entities: new(new Dictionary<string, Entity>())
+            );
+
+            Assert.IsTrue(mockConfig.EnableDwNto1JoinOpt);
+        }
+
+        /// <summary>
+        /// When the feature flag object is NOT passed to build GraphQL runtime objects
+        /// Runtime config can correctly get the default value instead
+        /// </summary>
+        /// <returns></returns>
+        [TestMethod]
+        public void TestEnableDwNto1JoinQueryFeatureFlagDefaultValueLoaded()
+        {
+            RuntimeConfig mockConfig = new(
+               Schema: "",
+               DataSource: new(DatabaseType.MySQL, string.Empty, new()),
+               Runtime: new(
+                   Rest: new(),
+                   GraphQL: new(),
+                   Mcp: new(),
+                   Host: new(null, null)
+               ),
+               Entities: new(new Dictionary<string, Entity>())
+            );
+
+            FeatureFlags expect = new();
+
+            Assert.AreEqual(expect.EnableDwNto1JoinQueryOptimization, mockConfig.EnableDwNto1JoinOpt);
         }
         #endregion
     }

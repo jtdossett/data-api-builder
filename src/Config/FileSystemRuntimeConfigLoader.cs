@@ -135,7 +135,7 @@ public class FileSystemRuntimeConfigLoader : RuntimeConfigLoader
             return false;
         }
 
-        if (RuntimeConfig is not null && RuntimeConfig.IsDevelopmentMode())
+        if (RuntimeConfig is not null)
         {
             try
             {
@@ -189,7 +189,7 @@ public class FileSystemRuntimeConfigLoader : RuntimeConfigLoader
     /// <returns>True if the config was loaded, otherwise false.</returns>
     public bool TryLoadConfig(
         string path,
-        [NotNullWhen(true)] out RuntimeConfig? outConfig,
+        [NotNullWhen(true)] out RuntimeConfig? config,
         bool replaceEnvVar = false,
         ILogger? logger = null,
         bool? isDevMode = null)
@@ -238,7 +238,7 @@ public class FileSystemRuntimeConfigLoader : RuntimeConfigLoader
                 // mode in the new RuntimeConfig since we do not support hot-reload of the mode.
                 if (isDevMode is not null && RuntimeConfig.Runtime is not null && RuntimeConfig.Runtime.Host is not null)
                 {
-                    // Log error when the mode is changed during hot-reload. 
+                    // Log error when the mode is changed during hot-reload.
                     if (isDevMode != this.RuntimeConfig.IsDevelopmentMode())
                     {
                         if (logger is null)
@@ -254,7 +254,7 @@ public class FileSystemRuntimeConfigLoader : RuntimeConfigLoader
                     RuntimeConfig.Runtime.Host.Mode = (bool)isDevMode ? HostMode.Development : HostMode.Production;
                 }
 
-                outConfig = RuntimeConfig;
+                config = RuntimeConfig;
 
                 if (LastValidRuntimeConfig is null)
                 {
@@ -269,7 +269,7 @@ public class FileSystemRuntimeConfigLoader : RuntimeConfigLoader
                 RuntimeConfig = LastValidRuntimeConfig;
             }
 
-            outConfig = null;
+            config = null;
             return false;
         }
 
@@ -284,7 +284,7 @@ public class FileSystemRuntimeConfigLoader : RuntimeConfigLoader
             logger.LogError(message: errorMessage, path);
         }
 
-        outConfig = null;
+        config = null;
         return false;
     }
 
@@ -318,6 +318,8 @@ public class FileSystemRuntimeConfigLoader : RuntimeConfigLoader
         IsNewConfigDetected = true;
         IsNewConfigValidated = false;
         SignalConfigChanged();
+
+        logger?.LogInformation("Hot-reload process finished.");
     }
 
     /// <summary>

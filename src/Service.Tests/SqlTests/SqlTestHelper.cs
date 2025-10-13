@@ -8,6 +8,7 @@ using System.Net;
 using System.Net.Http;
 using System.Reflection;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -62,6 +63,60 @@ namespace Azure.DataApiBuilder.Service.Tests.SqlTests
         {
             return string.IsNullOrEmpty(jsonString1) && string.IsNullOrEmpty(jsonString2) ||
                 JToken.DeepEquals(JToken.Parse(jsonString1), JToken.Parse(jsonString2));
+        }
+
+        /// <summary>
+        /// For nested queries results from direct db call, it will append a whitespace for each item in an array
+        /// e.g. [{address: 1},<whitespace>{address: 2}]
+        /// Removing all whitespaces when comparing with results from GraphQL
+        /// </summary>
+        /// <param name="expected"></param>
+        /// <param name="actual"></param>
+        public static void PerformTestEqualJsonStringsForNestedQueries(string expected, string actual)
+        {
+            PerformTestEqualJsonStrings(
+                expected.Trim().Replace(" ", ""),
+                actual.Trim().Replace(" ", ""));
+        }
+
+        /// <summary>
+        /// Perform equality for aggregation queries
+        /// Aggregation queries can have fields node and aggregations node and so the stucture is different.
+        /// </summary>
+        /// <param name="expected"></param>
+        /// <param name="actual"></param>
+        public static void PerformTestEqualJsonStringsForAggreagtionQueries(string expected, string actual)
+        {
+            JToken expectedToken = JToken.Parse(expected); // result of db query
+            JToken actualToken = JToken.Parse(actual); // result of gql query
+
+            IEnumerable<JObject> flatActualArray = actualToken["groupBy"]
+                .Select(gb =>
+                {
+                    JObject obj = new();
+                    JObject fields = gb["fields"] as JObject;
+                    if (fields != null)
+                    {
+                        foreach (JProperty prop in fields.Properties())
+                        {
+                            obj[prop.Name] = prop.Value;
+                        }
+                    }
+
+                    JObject aggs = gb["aggregations"] as JObject;
+                    if (aggs != null)
+                    {
+                        foreach (JProperty prop in aggs.Properties())
+                        {
+                            obj[prop.Name] = prop.Value;
+                        }
+                    }
+
+                    return obj;
+                });
+            JToken normalizedActual = new JArray(flatActualArray);
+
+            JsonStringsDeepEqual(expectedToken.ToString(), normalizedActual.ToString());
         }
 
         /// <summary>
@@ -136,18 +191,105 @@ namespace Azure.DataApiBuilder.Service.Tests.SqlTests
             if (message is not null)
             {
                 Console.WriteLine(response);
-                Assert.IsTrue(response.Contains(message), $"Message \"{message}\" not found in error");
+                Assert.IsTrue(response.Contains(message), $"Message \"{message}\" not found in error {response}");
             }
 
             if (statusCode != null)
             {
-                Assert.IsTrue(response.Contains($"\"code\":\"{statusCode}\""), $"Status code \"{statusCode}\" not found in error");
+                Assert.IsTrue(response.Contains($"\"code\":\"{statusCode}\""), $"Status code \"{statusCode}\" not found in error {response}");
             }
 
             if (path is not null)
             {
                 Console.WriteLine(response);
-                Assert.IsTrue(response.Contains(path), $"Path \"{path}\" not found in error");
+                Assert.IsTrue(response.Contains(path), $"Path \"{path}\" not found in error {response}");
+            }
+        }
+
+        /// <summary>
+        /// For the results from GraphQL execution response, it will contains the Items key for 1-Many relations
+        /// However for direct db query execution response, it will not have the Item key.
+        /// This function will remove the Item key and aggregate child objs to parent which makes it easier to compare two results
+        /// books {                    books {
+        ///     items: {
+        ///         authors {    ==>  
+        ///               id                  authors {
+        ///                                     id
+        ///                                 }
+        ///                             }
+        ///     }
+        /// }
+        /// }
+        /// </summary>
+        /// <param name="element"></param>
+        /// <returns></returns>
+        public static JsonNode RemoveItemsKeyFromJson(JsonElement element)
+        {
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                JsonObject jsonObject = new();
+
+                foreach (JsonProperty property in element.EnumerateObject())
+                {
+                    if (property.Name == "items")
+                    {
+                        if (property.Value.ValueKind == JsonValueKind.Array)
+                        {
+                            // If "items" contains an array, return its elements merged into the parent
+                            JsonArray itemsArray = new();
+                            foreach (JsonElement item in property.Value.EnumerateArray())
+                            {
+                                itemsArray.Add(RemoveItemsKeyFromJson(item));
+                            }
+
+                            return itemsArray;
+
+                        }
+                        else if (property.Value.ValueKind == JsonValueKind.Object)
+                        {
+                            // If "items" contains an object, merge its properties into the parent
+                            JsonObject nestedObject = RemoveItemsKeyFromJson(property.Value) as JsonObject;
+                            foreach (KeyValuePair<string, JsonNode> kvp in nestedObject)
+                            {
+                                jsonObject[kvp.Key] = kvp.Value;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        JsonNode node = RemoveItemsKeyFromJson(property.Value);
+
+                        if (node.GetValueKind() == JsonValueKind.String || node.GetValueKind() == JsonValueKind.Number)
+                        {
+                            jsonObject[property.Name] = node;
+                        }
+                        else
+                        {
+                            // serialize the array to be in same format as the query results from DB
+                            jsonObject[property.Name] = JsonSerializer.Serialize(node, new JsonSerializerOptions
+                            {
+                                // avoid \u0022 when a json string is serialized for multiple times due to recursion
+                                Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                            });
+                        }
+                    }
+                }
+
+                return jsonObject;
+            }
+            else if (element.ValueKind == JsonValueKind.Array)
+            {
+                JsonArray jsonArray = new();
+                foreach (JsonElement item in element.EnumerateArray())
+                {
+                    jsonArray.Add(RemoveItemsKeyFromJson(item));
+                }
+
+                return jsonArray;
+            }
+            else
+            {
+                return JsonValue.Create(element);
             }
         }
 
@@ -247,6 +389,7 @@ namespace Azure.DataApiBuilder.Service.Tests.SqlTests
                 Runtime: new(
                     Rest: new(),
                     GraphQL: new(),
+                    Mcp: new(),
                     Host: new(Cors: null, Authentication: authenticationOptions)
                 ),
                 Entities: new(new Dictionary<string, Entity>())
@@ -292,7 +435,7 @@ namespace Azure.DataApiBuilder.Service.Tests.SqlTests
                     // For eg. POST Request LocalPath: /api/Review
                     // 201 Created Response LocalPath: /api/Review/book_id/1/id/5001
                     // therefore, actualLocation = book_id/1/id/5001
-                    string responseLocalPath = (response.Headers.Location.LocalPath);
+                    string responseLocalPath = response.Headers.Location.LocalPath;
                     string requestLocalPath = request.RequestUri.LocalPath;
                     string actualLocationPath = responseLocalPath.Substring(requestLocalPath.Length + 1);
                     Assert.AreEqual(expectedLocationHeader, actualLocationPath);

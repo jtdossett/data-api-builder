@@ -31,6 +31,7 @@ namespace Cli.Tests
                 source: "MyTable",
                 permissions: new string[] { "anonymous", "read,update" },
                 entity: "FirstEntity",
+                description: null,
                 sourceType: null,
                 sourceParameters: null,
                 sourceKeyFields: null,
@@ -40,6 +41,8 @@ namespace Cli.Tests
                 fieldsToExclude: new string[] { },
                 policyRequest: null,
                 policyDatabase: null,
+                cacheEnabled: null,
+                cacheTtl: null,
                 config: TEST_RUNTIME_CONFIG_FILE,
                 restMethodsForStoredProcedure: null,
                 graphQLOperationForStoredProcedure: null
@@ -58,6 +61,7 @@ namespace Cli.Tests
                 source: "MyTable",
                 permissions: new string[] { "anonymous", "*" },
                 entity: "SecondEntity",
+                description: null,
                 sourceType: null,
                 sourceParameters: null,
                 sourceKeyFields: null,
@@ -67,6 +71,8 @@ namespace Cli.Tests
                 fieldsToExclude: new string[] { },
                 policyRequest: null,
                 policyDatabase: null,
+                cacheEnabled: null,
+                cacheTtl: null,
                 config: TEST_RUNTIME_CONFIG_FILE,
                 restMethodsForStoredProcedure: null,
                 graphQLOperationForStoredProcedure: null
@@ -87,6 +93,7 @@ namespace Cli.Tests
                 source: "MyTable",
                 permissions: new string[] { "anonymous", "*" },
                 entity: "FirstEntity",
+                description: null,
                 sourceType: null,
                 sourceParameters: null,
                 sourceKeyFields: null,
@@ -96,10 +103,12 @@ namespace Cli.Tests
                 fieldsToExclude: null,
                 policyRequest: null,
                 policyDatabase: null,
+                cacheEnabled: null,
+                cacheTtl: null,
                 config: TEST_RUNTIME_CONFIG_FILE,
                 restMethodsForStoredProcedure: null,
                 graphQLOperationForStoredProcedure: null
-                );
+            );
 
             string initialConfiguration = AddPropertiesToJson(INITIAL_CONFIG, GetFirstEntityConfiguration());
             Assert.IsTrue(RuntimeConfigLoader.TryParseConfig(initialConfiguration, out RuntimeConfig? runtimeConfig), "Loaded config");
@@ -117,9 +126,10 @@ namespace Cli.Tests
         public Task AddEntityWithAnExistingNameButWithDifferentCase()
         {
             AddOptions options = new(
-               source: "MyTable",
-               permissions: new string[] { "anonymous", "*" },
+                source: "MyTable",
+                permissions: new string[] { "anonymous", "*" },
                 entity: "FIRSTEntity",
+                description: null,
                 sourceType: null,
                 sourceParameters: null,
                 sourceKeyFields: null,
@@ -129,6 +139,8 @@ namespace Cli.Tests
                 fieldsToExclude: new string[] { },
                 policyRequest: null,
                 policyDatabase: null,
+                cacheEnabled: null,
+                cacheTtl: null,
                 config: TEST_RUNTIME_CONFIG_FILE,
                 restMethodsForStoredProcedure: null,
                 graphQLOperationForStoredProcedure: null
@@ -136,6 +148,36 @@ namespace Cli.Tests
 
             string initialConfiguration = AddPropertiesToJson(INITIAL_CONFIG, GetFirstEntityConfiguration());
             return ExecuteVerifyTest(options, initialConfiguration);
+        }
+
+        /// <summary>
+        /// Simple test to verify success on adding a new entity with caching enabled.
+        /// </summary>
+        [TestMethod]
+        public Task AddEntityWithCachingEnabled()
+        {
+            AddOptions options = new(
+                source: "MyTable",
+                permissions: new string[] { "anonymous", "*" },
+                entity: "CachingEntity",
+                description: null,
+                sourceType: null,
+                sourceParameters: null,
+                sourceKeyFields: null,
+                restRoute: null,
+                graphQLType: null,
+                fieldsToInclude: null,
+                fieldsToExclude: null,
+                policyRequest: null,
+                policyDatabase: null,
+                cacheEnabled: "true",
+                cacheTtl: "1",
+                config: TEST_RUNTIME_CONFIG_FILE,
+                restMethodsForStoredProcedure: null,
+                graphQLOperationForStoredProcedure: null
+            );
+
+            return ExecuteVerifyTest(options);
         }
 
         /// <summary>
@@ -155,6 +197,7 @@ namespace Cli.Tests
                source: "MyTable",
                permissions: new string[] { "anonymous", "delete" },
                 entity: "MyEntity",
+                description: null,
                 sourceType: null,
                 sourceParameters: null,
                 sourceKeyFields: null,
@@ -165,6 +208,8 @@ namespace Cli.Tests
                 policyRequest: policyRequest,
                 policyDatabase: policyDatabase,
                 config: TEST_RUNTIME_CONFIG_FILE,
+                cacheEnabled: null,
+                cacheTtl: null,
                 restMethodsForStoredProcedure: null,
                 graphQLOperationForStoredProcedure: null
             );
@@ -185,6 +230,7 @@ namespace Cli.Tests
                 source: "s001.book",
                 permissions: new string[] { "anonymous", "execute" },
                 entity: "MyEntity",
+                description: null,
                 sourceType: "stored-procedure",
                 sourceParameters: new string[] { "param1:123", "param2:hello", "param3:true" },
                 sourceKeyFields: null,
@@ -195,6 +241,8 @@ namespace Cli.Tests
                 policyRequest: null,
                 policyDatabase: null,
                 config: TEST_RUNTIME_CONFIG_FILE,
+                cacheEnabled: null,
+                cacheTtl: null,
                 restMethodsForStoredProcedure: null,
                 graphQLOperationForStoredProcedure: null
                 );
@@ -214,6 +262,7 @@ namespace Cli.Tests
                 source: "s001.book",
                 permissions: new string[] { "anonymous", "execute" },
                 entity: "MyEntity",
+                description: null,
                 sourceType: "stored-procedure",
                 sourceParameters: new string[] { "param1:123", "param2:hello", "param3:true" },
                 sourceKeyFields: null,
@@ -223,12 +272,46 @@ namespace Cli.Tests
                 fieldsToExclude: new string[] { },
                 policyRequest: null,
                 policyDatabase: null,
+                cacheEnabled: null,
+                cacheTtl: null,
                 config: TEST_RUNTIME_CONFIG_FILE,
                 restMethodsForStoredProcedure: new string[] { "Post", "Put", "Patch" },
                 graphQLOperationForStoredProcedure: "Query"
                 );
 
             return ExecuteVerifyTest(options);
+        }
+
+        [TestMethod]
+        public void AddEntityWithDescriptionAndVerifyInConfig()
+        {
+            string description = "This is a test entity description.";
+            AddOptions options = new(
+                source: "MyTable",
+                permissions: new string[] { "anonymous", "read" },
+                entity: "EntityWithDescription",
+                description: description,
+                sourceType: null,
+                sourceParameters: null,
+                sourceKeyFields: null,
+                restRoute: null,
+                graphQLType: null,
+                fieldsToInclude: new string[] { },
+                fieldsToExclude: new string[] { },
+                policyRequest: null,
+                policyDatabase: null,
+                cacheEnabled: null,
+                cacheTtl: null,
+                config: TEST_RUNTIME_CONFIG_FILE,
+                restMethodsForStoredProcedure: null,
+                graphQLOperationForStoredProcedure: null
+            );
+
+            string config = INITIAL_CONFIG;
+            Assert.IsTrue(RuntimeConfigLoader.TryParseConfig(config, out RuntimeConfig? runtimeConfig), "Loaded base config.");
+            Assert.IsTrue(TryAddNewEntity(options, runtimeConfig, out RuntimeConfig updatedRuntimeConfig), "Added entity to config.");
+            Assert.IsNotNull(updatedRuntimeConfig.Entities["EntityWithDescription"].Description);
+            Assert.AreEqual(description, updatedRuntimeConfig.Entities["EntityWithDescription"].Description);
         }
 
         /// <summary>
@@ -262,6 +345,7 @@ namespace Cli.Tests
                 source: "testSource",
                 permissions: new string[] { "anonymous", operations },
                 entity: "book",
+                description: null,
                 sourceType: sourceType,
                 sourceParameters: parameters,
                 sourceKeyFields: keyFields,
@@ -271,6 +355,8 @@ namespace Cli.Tests
                 fieldsToExclude: new string[] { },
                 policyRequest: null,
                 policyDatabase: null,
+                cacheEnabled: null,
+                cacheTtl: null,
                 config: TEST_RUNTIME_CONFIG_FILE,
                 restMethodsForStoredProcedure: null,
                 graphQLOperationForStoredProcedure: null
@@ -319,6 +405,7 @@ namespace Cli.Tests
                 source: "s001.book",
                 permissions: new string[] { "anonymous", "execute" },
                 entity: "MyEntity",
+                description: null,
                 sourceType: "stored-procedure",
                 sourceParameters: null,
                 sourceKeyFields: null,
@@ -328,6 +415,8 @@ namespace Cli.Tests
                 fieldsToExclude: new string[] { },
                 policyRequest: null,
                 policyDatabase: null,
+                cacheEnabled: null,
+                cacheTtl: null,
                 config: TEST_RUNTIME_CONFIG_FILE,
                 restMethodsForStoredProcedure: restMethods,
                 graphQLOperationForStoredProcedure: graphQLOperation
@@ -352,6 +441,7 @@ namespace Cli.Tests
                 source: "s001.book",
                 permissions: new string[] { "anonymous", "execute" },
                 entity: "MyEntity",
+                description: null,
                 sourceType: "stored-procedure",
                 sourceParameters: null,
                 sourceKeyFields: null,
@@ -361,6 +451,8 @@ namespace Cli.Tests
                 fieldsToExclude: new string[] { },
                 policyRequest: null,
                 policyDatabase: null,
+                cacheEnabled: null,
+                cacheTtl: null,
                 config: TEST_RUNTIME_CONFIG_FILE,
                 restMethodsForStoredProcedure: restMethods,
                 graphQLOperationForStoredProcedure: graphQLOperation
@@ -388,6 +480,7 @@ namespace Cli.Tests
                 source: "MyTable",
                 permissions: permissions,
                 entity: "MyEntity",
+                description: null,
                 sourceType: null,
                 sourceParameters: null,
                 sourceKeyFields: null,
@@ -397,6 +490,8 @@ namespace Cli.Tests
                 fieldsToExclude: new string[] { "level" },
                 policyRequest: null,
                 policyDatabase: null,
+                cacheEnabled: null,
+                cacheTtl: null,
                 config: TEST_RUNTIME_CONFIG_FILE,
                 restMethodsForStoredProcedure: null,
                 graphQLOperationForStoredProcedure: null

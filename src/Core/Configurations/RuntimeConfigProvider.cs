@@ -117,7 +117,7 @@ public class RuntimeConfigProvider
     /// <returns>The RuntimeConfig instance.</returns>
     /// <remark>Dont use this method if environment variable references need to be retained.</remark>
     /// <exception cref="DataApiBuilderException">Thrown when the loader is unable to load an instance of the config from its known location.</exception>
-    public RuntimeConfig GetConfig()
+    public virtual RuntimeConfig GetConfig()
     {
         if (_configLoader.RuntimeConfig is not null)
         {
@@ -314,6 +314,10 @@ public class RuntimeConfigProvider
             ILogger<RuntimeConfigValidator> logger = loggerFactory.CreateLogger<RuntimeConfigValidator>();
             RuntimeConfigValidator runtimeConfigValidator = new(this, fileSystem, logger, true);
 
+            // This function only works if DAB is started in Production Mode
+            _configLoader.InsertWantedChangesInProductionMode();
+
+            // Checks if the new config is valid or invalid
             _configLoader.IsNewConfigValidated = runtimeConfigValidator.TryValidateConfig(ConfigFilePath, loggerFactory).Result;
 
             // Saves the lastValidRuntimeConfig as the new RuntimeConfig if it is validated for hot reload

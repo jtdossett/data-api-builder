@@ -9,8 +9,10 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Azure.DataApiBuilder.Config;
 using Azure.DataApiBuilder.Service.Exceptions;
+using Azure.DataApiBuilder.Service.Telemetry;
 using Microsoft.ApplicationInsights;
 using Microsoft.AspNetCore;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
@@ -19,6 +21,9 @@ using Microsoft.Extensions.Logging.ApplicationInsights;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Resources;
+using Serilog;
+using Serilog.Core;
+using Serilog.Extensions.Logging;
 
 namespace Azure.DataApiBuilder.Service
 {
@@ -77,8 +82,8 @@ namespace Azure.DataApiBuilder.Service
                 .ConfigureWebHostDefaults(webBuilder =>
                 {
                     Startup.MinimumLogLevel = GetLogLevelFromCommandLineArgs(args, out Startup.IsLogLevelOverriddenByCli);
-                    ILoggerFactory? loggerFactory = GetLoggerFactoryForLogLevel(Startup.MinimumLogLevel);
-                    ILogger<Startup>? startupLogger = loggerFactory.CreateLogger<Startup>();
+                    ILoggerFactory loggerFactory = GetLoggerFactoryForLogLevel(Startup.MinimumLogLevel);
+                    ILogger<Startup> startupLogger = loggerFactory.CreateLogger<Startup>();
                     DisableHttpsRedirectionIfNeeded(args);
                     webBuilder.UseStartup(builder => new Startup(builder.Configuration, startupLogger));
                 });
@@ -99,8 +104,8 @@ namespace Azure.DataApiBuilder.Service
             cmd.AddOption(logLevelOption);
             ParseResult result = GetParseResult(cmd, args);
             bool matchedToken = result.Tokens.Count - result.UnmatchedTokens.Count - result.UnparsedTokens.Count > 1;
-            LogLevel logLevel = matchedToken ? result.GetValueForOption<LogLevel>(logLevelOption) : LogLevel.Error;
-            isLogLevelOverridenByCli = matchedToken ? true : false;
+            LogLevel logLevel = matchedToken ? result.GetValueForOption(logLevelOption) : LogLevel.Error;
+            isLogLevelOverridenByCli = matchedToken;
 
             if (logLevel is > LogLevel.None or < LogLevel.Trace)
             {
@@ -124,26 +129,37 @@ namespace Azure.DataApiBuilder.Service
         private static ParseResult GetParseResult(Command cmd, string[] args)
         {
             CommandLineConfiguration cmdConfig = new(cmd);
-            System.CommandLine.Parsing.Parser parser = new(cmdConfig);
+            Parser parser = new(cmdConfig);
             return parser.Parse(args);
         }
 
         /// <summary>
         /// Creates a LoggerFactory and add filter with the given LogLevel.
         /// </summary>
-        /// <param name="logLevel">minimum log level.</param>
+        /// <param name="logLevel">Minimum log level.</param>
         /// <param name="appTelemetryClient">Telemetry client</param>
-        public static ILoggerFactory GetLoggerFactoryForLogLevel(LogLevel logLevel, TelemetryClient? appTelemetryClient = null)
+        /// <param name="logLevelInitializer">Hot-reloadable log level</param>
+        /// <param name="serilogLogger">Core Serilog logging pipeline</param>
+        public static ILoggerFactory GetLoggerFactoryForLogLevel(LogLevel logLevel, TelemetryClient? appTelemetryClient = null, LogLevelInitializer? logLevelInitializer = null, Logger? serilogLogger = null)
         {
             return LoggerFactory
                 .Create(builder =>
                 {
                     // Category defines the namespace we will log from,
-                    // including all sub-domains. ie: "Azure" includes
+                    // including all subdomains. ie: "Azure" includes
                     // "Azure.DataApiBuilder.Service"
-                    builder.AddFilter(category: "Microsoft", logLevel);
-                    builder.AddFilter(category: "Azure", logLevel);
-                    builder.AddFilter(category: "Default", logLevel);
+                    if (logLevelInitializer is null)
+                    {
+                        builder.AddFilter(category: "Microsoft", logLevel);
+                        builder.AddFilter(category: "Azure", logLevel);
+                        builder.AddFilter(category: "Default", logLevel);
+                    }
+                    else
+                    {
+                        builder.AddFilter(category: "Microsoft", level => level >= logLevelInitializer.MinLogLevel);
+                        builder.AddFilter(category: "Azure", level => level >= logLevelInitializer.MinLogLevel);
+                        builder.AddFilter(category: "Default", level => level >= logLevelInitializer.MinLogLevel);
+                    }
 
                     // For Sending all the ILogger logs to Application Insights
                     if (Startup.AppInsightsOptions.Enabled && !string.IsNullOrWhiteSpace(Startup.AppInsightsOptions.ConnectionString))
@@ -156,9 +172,17 @@ namespace Azure.DataApiBuilder.Service
                                     config.TelemetryChannel = Startup.CustomTelemetryChannel;
                                 }
                             },
-                            configureApplicationInsightsLoggerOptions: (options) => { }
-                        )
-                        .AddFilter<ApplicationInsightsLoggerProvider>(category: string.Empty, logLevel);
+                            configureApplicationInsightsLoggerOptions: _ => { }
+                        );
+
+                        if (logLevelInitializer is null)
+                        {
+                            builder.AddFilter<ApplicationInsightsLoggerProvider>(category: string.Empty, logLevel);
+                        }
+                        else
+                        {
+                            builder.AddFilter<ApplicationInsightsLoggerProvider>(category: string.Empty, level => level >= logLevelInitializer.MinLogLevel);
+                        }
                     }
 
                     if (Startup.OpenTelemetryOptions.Enabled && !string.IsNullOrWhiteSpace(Startup.OpenTelemetryOptions.Endpoint))
@@ -177,6 +201,34 @@ namespace Azure.DataApiBuilder.Service
                         });
                     }
 
+                    if (Startup.IsAzureLogAnalyticsAvailable(Startup.AzureLogAnalyticsOptions))
+                    {
+                        builder.AddProvider(new AzureLogAnalyticsLoggerProvider(Startup.CustomLogCollector));
+
+                        if (logLevelInitializer is null)
+                        {
+                            builder.AddFilter<AzureLogAnalyticsLoggerProvider>(category: string.Empty, logLevel);
+                        }
+                        else
+                        {
+                            builder.AddFilter<AzureLogAnalyticsLoggerProvider>(category: string.Empty, level => level >= logLevelInitializer.MinLogLevel);
+                        }
+                    }
+
+                    if (Startup.FileSinkOptions.Enabled && serilogLogger is not null)
+                    {
+                        builder.AddSerilog(serilogLogger);
+
+                        if (logLevelInitializer is null)
+                        {
+                            builder.AddFilter<SerilogLoggerProvider>(category: string.Empty, logLevel);
+                        }
+                        else
+                        {
+                            builder.AddFilter<SerilogLoggerProvider>(category: string.Empty, level => level >= logLevelInitializer.MinLogLevel);
+                        }
+                    }
+
                     builder.AddConsole();
                 });
         }
@@ -184,7 +236,7 @@ namespace Azure.DataApiBuilder.Service
         /// <summary>
         /// Use CommandLine parser to check for the flag `--no-https-redirect`.
         /// If it is present, https redirection is disabled.
-        /// By Default it is enabled.
+        /// By Default, it is enabled.
         /// </summary>
         /// <param name="args">array that may contain flag to disable https redirection.</param>
         private static void DisableHttpsRedirectionIfNeeded(string[] args)
@@ -206,17 +258,18 @@ namespace Azure.DataApiBuilder.Service
         // This is used for testing purposes only. The test web server takes in a
         // IWebHostBuilder, instead of a IHostBuilder.
         public static IWebHostBuilder CreateWebHostBuilder(string[] args) =>
-            WebHost.CreateDefaultBuilder(args)
-            .ConfigureAppConfiguration((hostingContext, builder) =>
-            {
-                AddConfigurationProviders(builder, args);
-                DisableHttpsRedirectionIfNeeded(args);
-            })
-            .UseStartup<Startup>();
+            WebHost
+                .CreateDefaultBuilder(args)
+                .ConfigureAppConfiguration((_, builder) =>
+                {
+                    AddConfigurationProviders(builder, args);
+                    DisableHttpsRedirectionIfNeeded(args);
+                })
+                .UseStartup<Startup>();
 
         // This is used for testing purposes only. The test web server takes in a
         // IWebHostBuilder, instead of a IHostBuilder.
-        public static IWebHostBuilder CreateWebHostFromInMemoryUpdateableConfBuilder(string[] args) =>
+        public static IWebHostBuilder CreateWebHostFromInMemoryUpdatableConfBuilder(string[] args) =>
             WebHost.CreateDefaultBuilder(args)
             .UseStartup<Startup>();
 
@@ -240,7 +293,7 @@ namespace Azure.DataApiBuilder.Service
         /// </summary>
         internal static bool ValidateAspNetCoreUrls()
         {
-            if (Environment.GetEnvironmentVariable("ASPNETCORE_URLS") is not string urls)
+            if (Environment.GetEnvironmentVariable("ASPNETCORE_URLS") is not { } urls)
             {
                 return true; // If the environment variable is missing, then it cannot be invalid.
             }
@@ -250,7 +303,7 @@ namespace Azure.DataApiBuilder.Service
                 return false;
             }
 
-            char[] separators = new[] { ';', ',', ' ' };
+            char[] separators = [';', ',', ' '];
             string[] urlList = urls.Split(separators, StringSplitOptions.RemoveEmptyEntries);
 
             foreach (string url in urlList)
@@ -266,8 +319,7 @@ namespace Azure.DataApiBuilder.Service
                 }
 
                 string testUrl = ReplaceWildcardHost(url);
-                if (!Uri.TryCreate(testUrl, UriKind.Absolute, out Uri? uriResult) ||
-                    (uriResult.Scheme != Uri.UriSchemeHttp && uriResult.Scheme != Uri.UriSchemeHttps))
+                if (!CheckSanityOfUrl(testUrl))
                 {
                     return false;
                 }
@@ -283,6 +335,28 @@ namespace Azure.DataApiBuilder.Service
 
             static string ReplaceWildcardHost(string url) =>
                 Regex.Replace(url, @"^(https?://)[\+\*]", "$1localhost", RegexOptions.IgnoreCase);
+        }
+
+        public static bool CheckSanityOfUrl(string uri)
+        {
+            if (!Uri.TryCreate(uri, UriKind.Absolute, out Uri? parsedUri))
+            {
+                return false;
+            }
+
+            // Only allow HTTP or HTTPS schemes
+            if (parsedUri.Scheme != Uri.UriSchemeHttp && parsedUri.Scheme != Uri.UriSchemeHttps)
+            {
+                return false;
+            }
+
+            // Disallow empty hostnames
+            if (string.IsNullOrWhiteSpace(parsedUri.Host))
+            {
+                return false;
+            }
+
+            return true;
         }
     }
 }
