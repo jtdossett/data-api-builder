@@ -3,6 +3,7 @@
 
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json.Serialization;
+using Azure.DataApiBuilder.Config.Converters;
 using Azure.DataApiBuilder.Config.HealthCheck;
 
 namespace Azure.DataApiBuilder.Config.ObjectModel;
@@ -30,14 +31,17 @@ public record Entity
     public const string PROPERTY_METHODS = "methods";
     public string? Description { get; init; }
     public EntitySource Source { get; init; }
+    public List<FieldMetadata>? Fields { get; init; }
     public EntityGraphQLOptions GraphQL { get; init; }
     public EntityRestOptions Rest { get; init; }
     public EntityPermission[] Permissions { get; init; }
     public Dictionary<string, string>? Mappings { get; init; }
     public Dictionary<string, EntityRelationship>? Relationships { get; init; }
     public EntityCacheOptions? Cache { get; init; }
-
     public EntityHealthCheckConfig? Health { get; init; }
+
+    [JsonConverter(typeof(EntityMcpOptionsConverterFactory))]
+    public EntityMcpOptions? Mcp { get; init; }
 
     [JsonIgnore]
     public bool IsLinkingEntity { get; init; }
@@ -46,6 +50,7 @@ public record Entity
     public Entity(
         EntitySource Source,
         EntityGraphQLOptions GraphQL,
+        List<FieldMetadata>? Fields,
         EntityRestOptions Rest,
         EntityPermission[] Permissions,
         Dictionary<string, string>? Mappings,
@@ -53,10 +58,12 @@ public record Entity
         EntityCacheOptions? Cache = null,
         bool IsLinkingEntity = false,
         EntityHealthCheckConfig? Health = null,
-        string? Description = null)
+        string? Description = null,
+        EntityMcpOptions? Mcp = null)
     {
         this.Health = Health;
         this.Source = Source;
+        this.Fields = Fields;
         this.GraphQL = GraphQL;
         this.Rest = Rest;
         this.Permissions = Permissions;
@@ -65,6 +72,7 @@ public record Entity
         this.Cache = Cache;
         this.IsLinkingEntity = IsLinkingEntity;
         this.Description = Description;
+        this.Mcp = Mcp;
     }
 
     /// <summary>

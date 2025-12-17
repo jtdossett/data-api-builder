@@ -25,8 +25,19 @@ namespace Cli.Commands
             string? policyDatabase,
             string? cacheEnabled,
             string? cacheTtl,
-            string? config,
-            string? description)
+            string? description,
+            IEnumerable<string>? parametersNameCollection,
+            IEnumerable<string>? parametersDescriptionCollection,
+            IEnumerable<string>? parametersRequiredCollection,
+            IEnumerable<string>? parametersDefaultCollection,
+            IEnumerable<string>? fieldsNameCollection,
+            IEnumerable<string>? fieldsAliasCollection,
+            IEnumerable<string>? fieldsDescriptionCollection,
+            IEnumerable<bool>? fieldsPrimaryKeyCollection,
+            string? mcpDmlTools = null,
+            string? mcpCustomTool = null,
+            string? config = null
+        )
             : base(config)
         {
             Entity = entity;
@@ -44,6 +55,16 @@ namespace Cli.Commands
             CacheEnabled = cacheEnabled;
             CacheTtl = cacheTtl;
             Description = description;
+            ParametersNameCollection = parametersNameCollection;
+            ParametersDescriptionCollection = parametersDescriptionCollection;
+            ParametersRequiredCollection = parametersRequiredCollection;
+            ParametersDefaultCollection = parametersDefaultCollection;
+            FieldsNameCollection = fieldsNameCollection;
+            FieldsAliasCollection = fieldsAliasCollection;
+            FieldsDescriptionCollection = fieldsDescriptionCollection;
+            FieldsPrimaryKeyCollection = fieldsPrimaryKeyCollection;
+            McpDmlTools = mcpDmlTools;
+            McpCustomTool = mcpCustomTool;
         }
 
         // Entity is required but we have made required as false to have custom error message (more user friendly), if not provided.
@@ -91,5 +112,35 @@ namespace Cli.Commands
 
         [Option("description", Required = false, HelpText = "Description of the entity.")]
         public string? Description { get; }
+
+        [Option("parameters.name", Required = false, Separator = ',', HelpText = "Comma-separated list of parameter names for stored procedure.")]
+        public IEnumerable<string>? ParametersNameCollection { get; }
+
+        [Option("parameters.description", Required = false, Separator = ',', HelpText = "Comma-separated list of parameter descriptions for stored procedure.")]
+        public IEnumerable<string>? ParametersDescriptionCollection { get; }
+
+        [Option("parameters.required", Required = false, Separator = ',', HelpText = "Comma-separated list of parameter required flags (true/false) for stored procedure.")]
+        public IEnumerable<string>? ParametersRequiredCollection { get; }
+
+        [Option("parameters.default", Required = false, Separator = ',', HelpText = "Comma-separated list of parameter default values for stored procedure.")]
+        public IEnumerable<string>? ParametersDefaultCollection { get; }
+
+        [Option("fields.name", Required = false, Separator = ',', HelpText = "Name of the database column to expose as a field.")]
+        public IEnumerable<string>? FieldsNameCollection { get; }
+
+        [Option("fields.alias", Required = false, Separator = ',', HelpText = "Alias for the field.")]
+        public IEnumerable<string>? FieldsAliasCollection { get; }
+
+        [Option("fields.description", Required = false, Separator = ',', HelpText = "Description for the field.")]
+        public IEnumerable<string>? FieldsDescriptionCollection { get; }
+
+        [Option("fields.primary-key", Required = false, Separator = ',', HelpText = "Set this field as a primary key.")]
+        public IEnumerable<bool>? FieldsPrimaryKeyCollection { get; }
+
+        [Option("mcp.dml-tools", Required = false, HelpText = "Enable MCP DML (Data Manipulation Language) tools for this entity. Allows CRUD operations via MCP. Default value is true.")]
+        public string? McpDmlTools { get; }
+
+        [Option("mcp.custom-tool", Required = false, HelpText = "Enable MCP custom tool for this entity. Only valid for stored procedures. Default value is false.")]
+        public string? McpCustomTool { get; }
     }
 }
